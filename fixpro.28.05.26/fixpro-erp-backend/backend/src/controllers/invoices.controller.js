@@ -58,7 +58,14 @@ const recordPayment = async (req, res, next) => {
     const { amount, method = 'cash', reference_no, notes } = req.body;
     if (!amount || amount <= 0) throw new AppError('المبلغ غير صالح');
 
-    const { rows: inv } = await query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const branchId = req.user.branch_id || null;
+
+    const { rows: inv } = await query(
+      `SELECT * FROM invoices
+       WHERE id = $1
+         AND ($2::uuid IS NULL OR branch_id = $2)`,
+      [req.params.id, branchId]
+    );
     if (!inv.length) throw new AppError('الفاتورة غير موجودة', 404);
     if (inv[0].status === 'paid') throw new AppError('الفاتورة مدفوعة بالكامل مسبقاً');
     if (amount > inv[0].balance_due)
