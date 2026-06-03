@@ -63,10 +63,11 @@ router.patch('/:id/claim', async (req, res, next) => {
   try {
     const { action_taken } = req.body;
     const { rows: existing } = await query(
-      'SELECT claimed_by, action_taken FROM notifications WHERE id=$1',
-      [req.params.id]
+      `SELECT claimed_by, action_taken FROM notifications
+       WHERE id=$1 AND recipient=$2`,
+      [req.params.id, req.user.id.toString()]
     );
-    if (!existing.length) return res.status(404).json({ success:false, message:'الإشعار غير موجود' });
+    if (!existing.length) return res.status(404).json({ success:false, message:'الإشعار غير موجود أو لا يخصك' });
 
     if (existing[0].claimed_by) {
       const { rows: claimer } = await query(
