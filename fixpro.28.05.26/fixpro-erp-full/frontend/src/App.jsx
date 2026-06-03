@@ -50,6 +50,7 @@ import AppointmentsPage from './pages/Appointments'
 import ServicePricesPage from './pages/ServicePrices'
 import DevicesPage    from './pages/Devices'
 import BranchSelector from './components/BranchSelector'
+import NotificationCenter from './components/NotificationCenter'
 import { CustomersPage, InventoryPage, ReportsPage } from './pages/other'
 
 function ProtectedLayout() {
@@ -85,9 +86,12 @@ function ProtectedLayout() {
             </span>
             <BranchSelector />
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--green)', boxShadow:'0 0 6px var(--green)' }}/>
-            <span style={{ fontSize:11, color:'var(--muted)' }}>متصل</span>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <NotificationCenter onCountChange={setUnreadCount} />
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--green)', boxShadow:'0 0 6px var(--green)' }}/>
+              <span style={{ fontSize:11, color:'var(--muted)' }}>متصل</span>
+            </div>
           </div>
         </div>
         <ErrorBoundary>
