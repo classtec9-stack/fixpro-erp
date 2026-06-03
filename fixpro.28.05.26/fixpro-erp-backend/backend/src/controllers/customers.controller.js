@@ -47,9 +47,18 @@ const getCustomers = async (req, res, next) => {
 // GET /api/customers/:id
 const getCustomerById = async (req, res, next) => {
   try {
-    const { rows } = await query('SELECT * FROM customers WHERE id = $1', [req.params.id]);
+    const branchId = req.user.branch_id || null;
+
+    // 1. تحقق من الفرع عند جلب العميل
+    const { rows } = await query(
+      `SELECT * FROM customers
+       WHERE id = $1
+         AND ($2::uuid IS NULL OR branch_id = $2)`,
+      [req.params.id, branchId]
+    );
     if (!rows.length) throw new AppError('العميل غير موجود', 404);
 
+    // 2. تذاكر الفرع فقط
     const { rows: orders } = await query(
       `SELECT o.id, o.order_number, o.status, o.received_at,
               d.brand, d.model, i.total
@@ -57,13 +66,20 @@ const getCustomerById = async (req, res, next) => {
        JOIN devices d ON d.id = o.device_id
        LEFT JOIN invoices i ON i.order_id = o.id
        WHERE o.customer_id = $1
+         AND ($2::uuid IS NULL OR o.branch_id = $2)
        ORDER BY o.received_at DESC LIMIT 20`,
-      [req.params.id]
+      [req.params.id, branchId]
     );
 
+    // 3. أجهزة مرتبطة بتذاكر الفرع فقط
     const { rows: devices } = await query(
-      'SELECT * FROM devices WHERE customer_id = $1 ORDER BY created_at DESC',
-      [req.params.id]
+      `SELECT DISTINCT d.*
+       FROM devices d
+       JOIN orders o ON o.device_id = d.id
+       WHERE d.customer_id = $1
+         AND ($2::uuid IS NULL OR o.branch_id = $2)
+       ORDER BY d.created_at DESC`,
+      [req.params.id, branchId]
     );
 
     res.json({ success: true, data: { ...rows[0], orders, devices } });
@@ -90,14 +106,19 @@ const createCustomer = async (req, res, next) => {
 const updateCustomer = async (req, res, next) => {
   try {
     const { full_name, phone, phone_alt, email, address, city, notes, is_vip } = req.body;
+    const branchId = req.user.branch_id || null;
+
     const { rows } = await query(
       `UPDATE customers SET
          full_name=$1, phone=$2, phone_alt=$3, email=$4,
          address=$5, city=$6, notes=$7, is_vip=$8
-       WHERE id=$9 RETURNING *`,
-      [full_name, phone, phone_alt, email, address, city, notes, is_vip, req.params.id]
+       WHERE id=$9
+         AND ($10::uuid IS NULL OR branch_id = $10)
+       RETURNING *`,
+      [full_name, phone, phone_alt, email, address, city, notes, is_vip,
+       req.params.id, branchId]
     );
-    if (!rows.length) throw new AppError('العميل غير موجود', 404);
+    if (!rows.length) throw new AppError('العميل غير موجود أو لا يخص فرعك', 404);
     res.json({ success: true, message: 'تم تحديث بيانات العميل', data: rows[0] });
   } catch (err) { next(err); }
 };
