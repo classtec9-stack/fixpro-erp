@@ -87,7 +87,7 @@ function ProtectedLayout() {
             <BranchSelector />
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <NotificationCenter onCountChange={setUnreadCount} />
+            <NotificationCenter unreadCount={unreadCount} />
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
               <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--green)', boxShadow:'0 0 6px var(--green)' }}/>
               <span style={{ fontSize:11, color:'var(--muted)' }}>متصل</span>

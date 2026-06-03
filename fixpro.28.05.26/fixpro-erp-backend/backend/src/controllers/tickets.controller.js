@@ -115,8 +115,9 @@ const getTicketById = async (req, res, next) => {
        JOIN devices d ON d.id = o.device_id
        LEFT JOIN users t ON t.id = o.technician_id
        LEFT JOIN users cb ON cb.id = o.created_by
-       WHERE o.id = $1`,
-      [req.params.id]
+       WHERE o.id = $1
+         AND ($2::uuid IS NULL OR o.branch_id = $2)`,
+      [req.params.id, req.user.branch_id || null]
     );
     if (!rows.length) throw new AppError('التذكرة غير موجودة', 404);
 

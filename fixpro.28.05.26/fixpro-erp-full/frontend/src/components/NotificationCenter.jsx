@@ -11,7 +11,7 @@ const PRIORITY_DOT = {
 }
 const ACTIONABLE = ['part_request', 'customer_review']
 
-export default function NotificationCenter({ onCountChange }) {
+export default function NotificationCenter({ onCountChange, unreadCount: unreadFromParent }) {
   const [open, setOpen]         = useState(false)
   const [expanded, setExpanded] = useState(null)
   const [claiming, setClaiming] = useState(false)
@@ -26,9 +26,9 @@ export default function NotificationCenter({ onCountChange }) {
     refetchInterval: 10000,
   })
   const notifs = data?.data || []
-  const unread = notifs.filter(n => !n.is_read).length
 
-  useEffect(() => { onCountChange?.(unread) }, [unread])
+  // العداد يأتي من App.jsx (المصدر الوحيد) — لا نحسبه هنا
+  const unread = unreadFromParent ?? notifs.filter(n => !n.is_read).length
 
   const claimFirst = async (notifId, actionLabel) => {
     try {
