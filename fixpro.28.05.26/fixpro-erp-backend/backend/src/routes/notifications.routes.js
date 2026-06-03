@@ -19,13 +19,7 @@ router.get('/', async (req, res, next) => {
        WHERE n.recipient = $1
          AND n.channel   = 'internal'
        ORDER BY
-         CASE COALESCE(n.priority,'normal')
-           WHEN 'critical' THEN 1
-           WHEN 'high'     THEN 2
-           WHEN 'normal'   THEN 3
-           WHEN 'low'      THEN 4
-           ELSE 3
-         END,
+         n.is_read ASC,
          n.created_at DESC
        LIMIT $2`,
       [req.user.id.toString(), limit]

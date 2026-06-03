@@ -10,29 +10,37 @@ async function notifyRole({ branchId, roles, type, message, orderId = null, prio
     const rolesArr = Array.isArray(roles) ? roles : [roles];
     const allRoles = [...new Set([...rolesArr, 'admin', 'branch_manager'])];
 
+    // تنظيف branchId — تأكد أنه UUID صالح أو null
+    const safeBranchId = (branchId && typeof branchId === 'string' && branchId.trim().length === 36)
+      ? branchId.trim()
+      : null;
+
+    console.log('[notify] notifyRole called | roles:', rolesArr, '| branchId:', safeBranchId);
+
+    // استخدم $2 IS NULL بدلاً من $2::uuid IS NULL لتجنب خطأ cast
     const { rows: users } = await query(
       `SELECT DISTINCT id FROM users
        WHERE is_active = true
          AND (
-           -- المدير يتلقى كل الإشعارات بغض النظر عن الفرع
-           role = 'admin'
+           role::text = 'admin'
            OR
-           -- باقي الأدوار: نفس الفرع فقط
-           (role = ANY($1::text[]) AND ($2::uuid IS NULL OR branch_id = $2))
+           (role::text = ANY($1::text[]) AND ($2::text IS NULL OR branch_id::text = $2::text))
          )`,
-      [allRoles, branchId || null]
+      [allRoles, safeBranchId]
     );
+
+    console.log('[notify] users found:', users.length, '| recipients:', users.map(u => u.id));
 
     for (const u of users) {
       await query(
         `INSERT INTO notifications
            (order_id, channel, recipient, message, status, type, is_read, priority)
          VALUES ($1, 'internal', $2, $3, 'pending', $4, false, $5)`,
-        [orderId, u.id.toString(), message, type, priority]
-      ).catch(() => {});
+        [orderId || null, u.id.toString(), message, type, priority]
+      ).catch(e => console.warn('[notify] INSERT failed:', e.message));
     }
   } catch (err) {
-    console.warn('[notify] error:', err.message);
+    console.error('[notify] notifyRole ERROR:', err.message, '| stack:', err.stack?.split('\n')[1]);
   }
 }
 
@@ -44,7 +52,7 @@ async function notifyUser({ userId, type, message, orderId = null, priority = 'n
       [orderId || null, userId.toString(), message, type, priority]
     );
   } catch (err) {
-    console.warn('[notify] notifyUser error:', err.message);
+    console.error('[notify] notifyUser ERROR:', err.message);
   }
 }
 
