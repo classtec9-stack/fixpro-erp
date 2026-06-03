@@ -17,10 +17,18 @@ const NOTIF_CONFIG = {
   general:          { icon: Bell,    color: '#8B5CF6', bg: 'rgba(139,92,246,.12)', label: 'إشعار' },
 }
 
+const PRIORITY_CONFIG = {
+  critical: { label:'حرج',   color:'#EF4444', bg:'rgba(239,68,68,.15)',   border:'rgba(239,68,68,.4)',   dot:'#EF4444' },
+  high:     { label:'عالي',  color:'#F97316', bg:'rgba(249,115,22,.1)',   border:'rgba(249,115,22,.3)',  dot:'#F97316' },
+  normal:   { label:'عادي',  color:'#3B82F6', bg:'rgba(59,130,246,.08)', border:'rgba(59,130,246,.2)',  dot:'#3B82F6' },
+  low:      { label:'منخفض', color:'#6B7280', bg:'rgba(107,114,128,.08)', border:'rgba(107,114,128,.2)', dot:'#9CA3AF' },
+}
+
 export default function NotificationsPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
   const [activeNotif, setActiveNotif] = useState(null)
+  const [priorityFilter, setPriorityFilter] = useState('all')
 
   const { data, isLoading } = useQuery({
     queryKey: ['notifications-internal'],
@@ -53,6 +61,9 @@ export default function NotificationsPage() {
 
   const notifs  = data?.data || []
   const unread  = notifs.filter(n => !n.is_read)
+  const filtered = priorityFilter === 'all'
+    ? notifs
+    : notifs.filter(n => (n.priority || 'normal') === priorityFilter)
 
   const handleClick = (notif) => {
     if (!notif.is_read) markRead.mutate(notif.id)
@@ -71,6 +82,38 @@ export default function NotificationsPage() {
             <CheckCircle size={14}/> تعليم الكل كمقروء
           </button>
         )}
+      </div>
+
+      {/* فلتر الأولوية */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap' }}>
+        {[
+          { key:'all',      label:'الكل',   count: notifs.length },
+          { key:'critical', label:'حرج',    count: notifs.filter(n=>(n.priority||'normal')==='critical').length },
+          { key:'high',     label:'عالي',   count: notifs.filter(n=>(n.priority||'normal')==='high').length },
+          { key:'normal',   label:'عادي',   count: notifs.filter(n=>(n.priority||'normal')==='normal').length },
+          { key:'low',      label:'منخفض',  count: notifs.filter(n=>(n.priority||'normal')==='low').length },
+        ].map(f => {
+          const pc = f.key !== 'all' ? PRIORITY_CONFIG[f.key] : null
+          const isActive = priorityFilter === f.key
+          return (
+            <button key={f.key} onClick={() => setPriorityFilter(f.key)} style={{
+              padding:'5px 14px', borderRadius:20, border:'1px solid',
+              borderColor: isActive ? (pc?.color || 'var(--blue)') : 'var(--border)',
+              background: isActive ? (pc?.bg || 'rgba(59,130,246,.1)') : 'transparent',
+              color: isActive ? (pc?.color || 'var(--blue)') : 'var(--muted)',
+              fontSize:12, fontFamily:'var(--font)', cursor:'pointer', fontWeight: isActive ? 700 : 400,
+              display:'flex', alignItems:'center', gap:5
+            }}>
+              {pc && <span style={{ width:7, height:7, borderRadius:'50%', background:pc.dot, display:'inline-block' }}/>}
+              {f.label}
+              {f.count > 0 && (
+                <span style={{ background: isActive ? (pc?.color||'var(--blue)') : 'var(--ink-3)',
+                  color: isActive ? '#fff' : 'var(--muted)', borderRadius:10,
+                  padding:'1px 7px', fontSize:10, fontWeight:700 }}>{f.count}</span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* أجهزة متروكة */}
@@ -125,13 +168,16 @@ export default function NotificationsPage() {
           ? <EmptyState icon={Bell} message="لا توجد إشعارات" sub="ستظهر هنا إشعارات عملك" />
           : (
             <div>
-              {notifs.map(n => {
+              {filtered.map(n => {
                 const cfg = NOTIF_CONFIG[n.type] || NOTIF_CONFIG.general
+                const pc  = PRIORITY_CONFIG[n.priority || 'normal'] || PRIORITY_CONFIG.normal
                 const Icon = cfg.icon
                 return (
                   <div key={n.id} onClick={() => handleClick(n)} style={{
                     display:'flex', gap:12, padding:'14px 18px',
                     borderBottom:'1px solid var(--border)',
+                    borderRight: n.priority === 'critical' ? '3px solid #EF4444' :
+                                 n.priority === 'high'     ? '3px solid #F97316' : '3px solid transparent',
                     background: n.is_read ? 'transparent' : 'rgba(59,130,246,.04)',
                     cursor:'pointer', transition:'background .15s'
                   }}
@@ -142,10 +188,16 @@ export default function NotificationsPage() {
                     </div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-                        <div>
+                        <div style={{ display:'flex', gap:5, alignItems:'center' }}>
                           <span style={{ fontSize:11, fontWeight:600, color:cfg.color, padding:'1px 6px', background:cfg.bg, borderRadius:4 }}>
                             {cfg.label}
                           </span>
+                          {n.priority && n.priority !== 'normal' && (
+                            <span style={{ fontSize:10, fontWeight:700, color:pc.color, padding:'1px 6px',
+                              background:pc.bg, borderRadius:4, border:`1px solid ${pc.border}` }}>
+                              {pc.label}
+                            </span>
+                          )}
                         </div>
                         {!n.is_read && <div style={{ width:8, height:8, borderRadius:'50%', background:'var(--blue)', flexShrink:0, marginTop:4 }}/>}
                       </div>
@@ -374,7 +426,7 @@ function CustomerReviewActions({ ticket, onDone, claimFirst, claiming }) {
 // ── إجراءات المخزن — تحويل القطعة مباشرة ─────────────────
 
 // ── تأكيد استلام القطعة من الفني ────────────────────────
-function TechnicianReceivePanel({ ticket, onDone }) {
+function TechnicianReceivePanel({ ticket, onDone, claimFirst }) {
   const qc = useQueryClient()
 
   const confirm = useMutation({
@@ -382,7 +434,9 @@ function TechnicianReceivePanel({ ticket, onDone }) {
       status: 'in_repair',
       note: '✅ الفني أكّد استلام القطعة — بدء الإصلاح'
     }),
-    onSuccess: () => {
+    onSuccess: async () => {
+      // قفل الإشعار بعد التأكيد
+      if (claimFirst) await claimFirst('الفني أكّد استلام القطعة').catch(() => {})
       toast.success('تم تأكيد الاستلام ✅ — التذكرة داخل الورشة')
       qc.invalidateQueries({ queryKey: ['my-tickets'] })
       onDone()
@@ -422,7 +476,7 @@ function PartRequestActions({ ticket, onDone, claimFirst, claiming }) {
 
   // إذا الفني — يرى زر تأكيد الاستلام فقط
   if (isTech) {
-    return <TechnicianReceivePanel ticket={ticket} onDone={onDone} />
+    return <TechnicianReceivePanel ticket={ticket} onDone={onDone} claimFirst={claimFirst} />
   }
   // إذا ليس مخزن ولا فني — رسالة إعلامية
   if (!isWarehouse) {

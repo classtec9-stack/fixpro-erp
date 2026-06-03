@@ -4,6 +4,7 @@ import api from '../services/api'
 import { Modal } from './ui'
 import toast from 'react-hot-toast'
 import { AlertTriangle, Package, Users, CheckCircle, XCircle, ChevronDown } from 'lucide-react'
+import DeliveryReceipt from './DeliveryReceipt'
 
 // ── خريطة الانتقالات المسموحة لكل حالة ──────────────────
 const TRANSITIONS = {
@@ -91,6 +92,7 @@ function StatusChangeModal({ ticket, transitions, onClose, onSuccess }) {
   const [partName, setPartName]   = useState('')
   const [customerMsg, setCustomerMsg] = useState('')
   const [rejectReason, setRejectReason] = useState('')
+  const [showDelivery, setShowDelivery] = useState(false)
 
   const { data: partsData } = useQuery({
     queryKey: ['parts-list'],
@@ -182,12 +184,31 @@ function StatusChangeModal({ ticket, transitions, onClose, onSuccess }) {
           <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
           <button
             className={`btn ${selected.to === 'rejected' ? 'btn-danger' : 'btn-primary'}`}
-            onClick={() => updateStatus.mutate()}
+            onClick={() => {
+              // عند التسليم — أظهر وصل التسليم أولاً
+              if (selected.to === 'delivered') {
+                setShowDelivery(true)
+              } else {
+                updateStatus.mutate()
+              }
+            }}
             disabled={updateStatus.isPending || !canSubmit()}>
             {updateStatus.isPending ? 'جاري التحديث...' : `تأكيد — ${STATUS_AR[selected.to]}`}
           </button>
         </div>
       }>
+
+        {/* وصل التسليم */}
+        {showDelivery && (
+          <DeliveryReceipt
+            ticket={ticket}
+            onClose={() => setShowDelivery(false)}
+            onConfirm={() => {
+              setShowDelivery(false)
+              updateStatus.mutate()
+            }}
+          />
+        )}
 
       {/* معلومات التذكرة */}
       <div style={{ display:'flex', gap:16, padding:'10px 14px', background:'var(--ink-3)', borderRadius:8, marginBottom:16, fontSize:13 }}>

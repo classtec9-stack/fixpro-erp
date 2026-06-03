@@ -11,13 +11,22 @@ router.get('/', async (req, res, next) => {
     // recipient مخزن كـ text — نقارن بـ user.id كـ text
     const { rows } = await query(
       `SELECT n.*, o.order_number,
-              u.full_name as claimed_by_name
+              u.full_name as claimed_by_name,
+              COALESCE(n.priority, 'normal') as priority
        FROM notifications n
        LEFT JOIN orders o ON o.id = n.order_id
        LEFT JOIN users  u ON u.id = n.claimed_by
        WHERE n.recipient = $1
          AND n.channel   = 'internal'
-       ORDER BY n.created_at DESC
+       ORDER BY
+         CASE COALESCE(n.priority,'normal')
+           WHEN 'critical' THEN 1
+           WHEN 'high'     THEN 2
+           WHEN 'normal'   THEN 3
+           WHEN 'low'      THEN 4
+           ELSE 3
+         END,
+         n.created_at DESC
        LIMIT $2`,
       [req.user.id.toString(), limit]
     );

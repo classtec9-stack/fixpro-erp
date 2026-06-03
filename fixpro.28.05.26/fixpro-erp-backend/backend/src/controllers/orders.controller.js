@@ -262,56 +262,52 @@ const addPart = async (req, res, next) => {
     await client.query('COMMIT');
 
     // ── بعد COMMIT: تغيير الحالة وإشعار الفني ──────────
+    const transferUserId = req.user?.id || null;
+    const transferBranchId = req.user?.branch_id || null;
+
     query(
       `UPDATE orders SET status = 'part_transferred', updated_at = NOW()
        WHERE id = $1 AND status = 'waiting_part'`,
       [req.params.id]
     ).catch(() => {});
 
-    // إشعار تحويل القطعة
+    // سجّل تغيير الحالة باسم المستخدم الفعلي
     query(
-      `SELECT o.order_number, o.branch_id, u.id as tech_id, u.full_name as tech_name,
+      `INSERT INTO order_status_log (order_id, changed_by, old_status, new_status, note)
+       VALUES ($1, $2, 'waiting_part', 'part_transferred', $3)`,
+      [req.params.id, transferUserId, `تحويل قطعة: ${partName} من المخزن`]
+    ).catch(() => {});
+
+    // إشعار واحد فقط — للفني + المدير
+    query(
+      `SELECT o.order_number, o.branch_id,
+              u.id as tech_id, u.full_name as tech_name,
               w.full_name as warehouse_name
        FROM orders o
        LEFT JOIN users u ON u.id = o.technician_id
        LEFT JOIN users w ON w.id = $2
        WHERE o.id = $1`,
-      [req.params.id, req.user?.id || null]
+      [req.params.id, transferUserId]
     ).then(({ rows: info }) => {
-      if (info[0]) {
-        // إشعار للفني
-        if (info[0].tech_id) {
-          const { notifyUser } = require('../utils/notify');
-          notifyUser({
-            userId: info[0].tech_id,
-            type: 'part_request',
-            orderId: req.params.id,
-            message: `📦 وصلت قطعة: ${partName} للتذكرة ${info[0].order_number} — أكّد الاستلام`
-          }).catch(()=>{});
-        }
-        // إشعار للمدير ومشرف الفرع
-        events.partTransferred(
-          info[0].branch_id, req.params.id, info[0].order_number,
-          partName, info[0].warehouse_name || 'المخزن'
-        ).catch(()=>{});
-      }
-    }).catch(()=>{});
+      if (!info[0]) return;
+      const { notifyUser, events } = require('../utils/notify');
 
-    // إشعار الفني (القديم — يُبقى للتوافق)
-    query(
-      `SELECT o.order_number, o.branch_id, u.id as tech_id, o.branch_id
-       FROM orders o LEFT JOIN users u ON u.id = o.technician_id WHERE o.id = $1`,
-      [req.params.id]
-    ).then(({ rows: orderInfo }) => {
-      if (orderInfo[0]?.tech_id) {
-        const { notifyUser } = require('../utils/notify');
+      // إشعار للفني
+      if (info[0].tech_id) {
         notifyUser({
-          userId: orderInfo[0].tech_id,
+          userId: info[0].tech_id,
           type: 'part_request',
           orderId: req.params.id,
-          message: `📦 وصلت قطعة: ${partName} للتذكرة ${orderInfo[0].order_number} — أكّد الاستلام`
+          message: `📦 وصلت قطعة: ${partName} للتذكرة ${info[0].order_number} — أكّد الاستلام`
         }).catch(() => {});
       }
+
+      // إشعار للمدير ومشرف الفرع
+      events.partTransferred(
+        info[0].branch_id, req.params.id, info[0].order_number,
+        partName, info[0].warehouse_name || 'المخزن'
+      ).catch(() => {});
+
     }).catch(() => {});
 
     // ── عمليات اختيارية أخرى ──────────────────────────

@@ -299,7 +299,13 @@ const updateTicketStatus = async (req, res, next) => {
     // نبني الـ query بدون CASE لتجنب inconsistent types
     const isReady     = status === 'ready';
     const isDelivered = status === 'delivered';
-    
+
+    // عيّن user_id للـ trigger حتى يسجّل الاسم الصحيح
+    await query(
+      `SELECT set_config('app.current_user_id', $1, true)`,
+      [req.user.id.toString()]
+    ).catch(() => {});
+
     const { rows } = await query(
       `UPDATE orders SET
          status           = $1::order_status,

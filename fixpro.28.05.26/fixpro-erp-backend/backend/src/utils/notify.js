@@ -2,28 +2,33 @@ const { query } = require('../config/database');
 
 /**
  * نظام إشعارات موحّد — المدير ومشرف الفرع يتلقون كل شيء
+ * الأولويات: low | normal | high | critical
  */
 
-async function notifyRole({ branchId, roles, type, message, orderId = null }) {
+async function notifyRole({ branchId, roles, type, message, orderId = null, priority = 'normal' }) {
   try {
     const rolesArr = Array.isArray(roles) ? roles : [roles];
-    // دائماً أضف admin و branch_manager
     const allRoles = [...new Set([...rolesArr, 'admin', 'branch_manager'])];
 
     const { rows: users } = await query(
       `SELECT DISTINCT id FROM users
-       WHERE role = ANY($1::text[])
-         AND is_active = true
-         AND ($2::uuid IS NULL OR branch_id = $2 OR role = 'admin')`,
+       WHERE is_active = true
+         AND (
+           -- المدير يتلقى كل الإشعارات بغض النظر عن الفرع
+           role = 'admin'
+           OR
+           -- باقي الأدوار: نفس الفرع فقط
+           (role = ANY($1::text[]) AND ($2::uuid IS NULL OR branch_id = $2))
+         )`,
       [allRoles, branchId || null]
     );
 
     for (const u of users) {
       await query(
         `INSERT INTO notifications
-           (order_id, channel, recipient, message, status, type, is_read)
-         VALUES ($1, 'internal', $2, $3, 'pending', $4, false)`,
-        [orderId, u.id.toString(), message, type]
+           (order_id, channel, recipient, message, status, type, is_read, priority)
+         VALUES ($1, 'internal', $2, $3, 'pending', $4, false, $5)`,
+        [orderId, u.id.toString(), message, type, priority]
       ).catch(() => {});
     }
   } catch (err) {
@@ -31,12 +36,12 @@ async function notifyRole({ branchId, roles, type, message, orderId = null }) {
   }
 }
 
-async function notifyUser({ userId, type, message, orderId = null }) {
+async function notifyUser({ userId, type, message, orderId = null, priority = 'normal' }) {
   try {
     await query(
-      `INSERT INTO notifications (order_id, channel, recipient, message, status, type, is_read)
-       VALUES ($1, 'internal', $2, $3, 'pending', $4, false)`,
-      [orderId || null, userId.toString(), message, type]
+      `INSERT INTO notifications (order_id, channel, recipient, message, status, type, is_read, priority)
+       VALUES ($1, 'internal', $2, $3, 'pending', $4, false, $5)`,
+      [orderId || null, userId.toString(), message, type, priority]
     );
   } catch (err) {
     console.warn('[notify] notifyUser error:', err.message);
@@ -51,6 +56,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['receptionist'],
       type: 'status_change',
+      priority: 'normal',
       message: `🔖 تذكرة جديدة ${orderNum} | ${customerName} | ${deviceName}` }),
 
   // تغيير حالة
@@ -61,9 +67,11 @@ const events = {
       part_transferred:'القطعة في الطريق', ready:'جاهز للتسليم ✅',
       delivered:'تم التسليم', rejected:'مرفوض', cancelled:'ملغي'
     };
+    const priority = newStatus === 'ready' ? 'high' : 'normal';
     return notifyRole({ branchId, orderId,
       roles: ['receptionist'],
       type: 'status_change',
+      priority,
       message: `📊 ${orderNum}: ${labels[newStatus] || newStatus}${techName ? ` (${techName})` : ''}` });
   },
 
@@ -72,6 +80,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['customer_service','receptionist'],
       type: 'customer_review',
+      priority: 'high',
       message: `📞 طلب موافقة العميل: ${customerName} (${customerPhone}) | ${orderNum}` }),
 
   // طلب قطعة
@@ -79,6 +88,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['warehouse'],
       type: 'part_request',
+      priority: 'high',
       message: `📦 طلب قطعة: ${partName} | التذكرة ${orderNum} | الفني: ${techName}` }),
 
   // تم تحويل قطعة
@@ -86,6 +96,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['technician'],
       type: 'part_request',
+      priority: 'high',
       message: `📦 وصلت قطعة: ${partName} للتذكرة ${orderNum} — أكّد الاستلام` }),
 
   // جهاز جاهز
@@ -93,6 +104,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['receptionist','customer_service'],
       type: 'status_change',
+      priority: 'high',
       message: `✅ جهاز جاهز: ${customerName} (${customerPhone}) | ${orderNum}` }),
 
   // فاتورة جديدة
@@ -100,6 +112,7 @@ const events = {
     notifyRole({ branchId, orderId,
       roles: ['accountant'],
       type: 'general',
+      priority: 'normal',
       message: `🧾 فاتورة جديدة: ${Number(amount).toLocaleString('ar-SA')} ريال` }),
 
   // دفعة مستلمة
@@ -108,6 +121,7 @@ const events = {
     return notifyRole({ branchId, orderId,
       roles: ['accountant'],
       type: 'general',
+      priority: 'low',
       message: `💰 دفعة: ${Number(amount).toLocaleString('ar-SA')} ريال (${methods[method]||method}) | ${customerName}` });
   },
 
@@ -116,20 +130,25 @@ const events = {
     notifyRole({ branchId,
       roles: ['warehouse'],
       type: 'part_request',
-      message: `⚠️ مخزون منخفض: ${partName} — متبقي ${qty} فقط` }),
+      priority: qty === 0 ? 'critical' : 'high',
+      message: qty === 0
+        ? `🚨 نفد المخزون: ${partName}`
+        : `⚠️ مخزون منخفض: ${partName} — متبقي ${qty} فقط` }),
 
   // حجز جديد
   newAppointment: (branchId, customerName, dateTime, phone) =>
     notifyRole({ branchId,
       roles: ['receptionist'],
       type: 'general',
+      priority: 'low',
       message: `📅 حجز جديد: ${customerName} (${phone}) | ${dateTime}` }),
 
   // تأخر تذكرة
   ticketOverdue: (branchId, orderId, orderNum, days) =>
     notifyRole({ branchId, orderId,
-      roles: [],  // admin و branch_manager فقط
+      roles: [],
       type: 'general',
+      priority: days > 7 ? 'critical' : 'high',
       message: `🕐 تذكرة متأخرة ${days} يوم: ${orderNum}` }),
 };
 
