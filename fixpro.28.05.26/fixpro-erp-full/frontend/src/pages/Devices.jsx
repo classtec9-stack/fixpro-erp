@@ -12,6 +12,7 @@ const STATUS_CONFIG = {
   in_repair:        { label:'داخل الورشة',       color:'#3B82F6', bg:'rgba(59,130,246,.1)',  icon:'🔧' },
   waiting_part:     { label:'ينتظر قطعة',        color:'#F97316', bg:'rgba(249,115,22,.1)',  icon:'📦' },
   part_transferred: { label:'القطعة في الطريق ⚡', color:'#8B5CF6', bg:'rgba(139,92,246,.1)', icon:'🚀' },
+  awaiting_technician_rejection: { label:'انتظار تأكيد الفني', color:'#EF4444', bg:'rgba(239,68,68,.1)', icon:'⚠️' },
   ready:            { label:'جاهز للتسليم',      color:'#10B981', bg:'rgba(16,185,129,.1)',  icon:'✅' },
   rejected:         { label:'مرفوض',              color:'#EF4444', bg:'rgba(239,68,68,.1)',   icon:'❌' },
 }
@@ -22,7 +23,7 @@ const PRIORITY_CONFIG = {
   normal: { label:'عادي', color:'var(--muted)' },
 }
 
-const STATUS_ORDER = ['new','quick_check','diagnosing','waiting_approval','in_repair','waiting_part','ready','rejected']
+const STATUS_ORDER = ['new','quick_check','diagnosing','waiting_approval','in_repair','waiting_part','part_transferred','awaiting_technician_rejection','ready','rejected']
 
 export default function DevicesPage() {
   const qc = useQueryClient()

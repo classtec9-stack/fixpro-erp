@@ -11,6 +11,18 @@ const createInvoice = async (req, res, next) => {
     const { order_id, labor_cost = 0, discount = 0, discount_reason, notes, due_date } = req.body;
     if (!order_id) throw new AppError('رقم الأوردر مطلوب');
 
+    // منع الفاتورة المكررة لنفس التذكرة
+    const { rows: dupCheck } = await client.query(
+      'SELECT id, invoice_number FROM invoices WHERE order_id = $1 LIMIT 1',
+      [order_id]
+    );
+    if (dupCheck.length) {
+      throw new AppError(
+        `فاتورة موجودة مسبقاً لهذه التذكرة — رقم الفاتورة: ${dupCheck[0].invoice_number || dupCheck[0].id}`,
+        409
+      );
+    }
+
     // Get parts cost for this order
     const { rows: partsRows } = await client.query(
       'SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM order_parts WHERE order_id = $1',

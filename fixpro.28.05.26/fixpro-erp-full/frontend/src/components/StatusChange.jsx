@@ -5,6 +5,10 @@ import { Modal } from './ui'
 import toast from 'react-hot-toast'
 import { AlertTriangle, Package, Users, CheckCircle, XCircle, ChevronDown } from 'lucide-react'
 import DeliveryReceipt from './DeliveryReceipt'
+import { useAuth } from '../context/AuthContext'
+
+// الانتقالات المسموحة لـ receptionist فقط
+const RECEPTIONIST_ALLOWED = ['new', 'diagnosing', 'ready', 'delivered', 'cancelled']
 
 // ── خريطة الانتقالات المسموحة لكل حالة ──────────────────
 const TRANSITIONS = {
@@ -35,8 +39,12 @@ const TRANSITIONS = {
   waiting_approval: [
     { to: 'in_repair',        label: 'وافق العميل — بدء الإصلاح', icon: '✅', color: '#10B981' },
     { to: 'waiting_part',     label: 'انتظار قطعة',                icon: '📦', color: '#F97316', needsPart: true },
-    { to: 'rejected',         label: 'رفض العميل',                  icon: '✗',  color: '#EF4444', needsReason: true },
+    { to: 'awaiting_technician_rejection', label: 'رفض العميل — انتظر تأكيد الفني', icon: '⚠️', color: '#EF4444', needsReason: true },
     { to: 'diagnosing',       label: 'إعادة الفحص',                icon: '🔬', color: '#8B5CF6' },
+  ],
+  awaiting_technician_rejection: [
+    { to: 'rejected',  label: 'القطعة لم تُركَّب — أعدها للمخزون', icon: '↩️', color: '#10B981', restorePart: true },
+    { to: 'rejected',  label: 'القطعة رُكِّبت — أغلق بدون إرجاع', icon: '✗',  color: '#EF4444' },
   ],
   ready: [
     { to: 'delivered',        label: 'تم تسليم الجهاز للعميل',    icon: '🏠', color: '#10B981' },
@@ -51,7 +59,9 @@ const TRANSITIONS = {
 const STATUS_AR = {
   new: 'تم الاستلام', quick_check: 'فحص سريع', diagnosing: 'قيد الفحص',
   waiting_approval: 'انتظار موافقة العميل', in_repair: 'داخل الورشة',
-  waiting_part: 'ينتظر قطعة', ready: 'جاهز للتسليم',
+  waiting_part: 'ينتظر قطعة', part_transferred: 'القطعة في الطريق',
+  awaiting_technician_rejection: '⚠️ انتظار تأكيد الفني',
+  ready: 'جاهز للتسليم',
   delivered: 'تم التسليم', rejected: 'مرفوض', cancelled: 'ملغي'
 }
 
@@ -59,8 +69,15 @@ const STATUS_AR = {
 export function StatusChangeButton({ ticket, onSuccess }) {
   const [open, setOpen] = useState(false)
   const [selectedTransition, setSelectedTransition] = useState(null)
+  const { user } = useAuth()
 
-  const transitions = TRANSITIONS[ticket.status] || []
+  let transitions = TRANSITIONS[ticket.status] || []
+
+  // receptionist يرى فقط الانتقالات المسموحة له
+  if (user?.role === 'receptionist') {
+    transitions = transitions.filter(t => RECEPTIONIST_ALLOWED.includes(t.to))
+  }
+
   if (!transitions.length) return null
 
   return (

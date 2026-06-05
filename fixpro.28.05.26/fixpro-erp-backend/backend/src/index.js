@@ -102,6 +102,7 @@ app.use('/api/tickets',       ticketRoutes);
 app.use('/api/customers',     customerRoutes);
 app.use('/api/technicians',   technicianRoutes);
 app.use('/api/inventory',     inventoryRoutes);
+app.use('/api/suppliers',     require('./routes/suppliers.routes'));
 app.use('/api/invoices',      invoiceRoutes);
 app.use('/api/reports',       reportRoutes);
 app.use('/api/notifications', notifRoutes);

@@ -292,7 +292,9 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
   const STATUS_LABELS_AR = {
     new:'تم الاستلام', quick_check:'فحص سريع', diagnosing:'قيد الفحص',
     waiting_approval:'انتظار موافقة', in_repair:'داخل الورشة',
-    waiting_part:'ينتظر قطعة', part_transferred:'القطعة في الطريق', ready:'جاهز', delivered:'تم التسليم',
+    waiting_part:'ينتظر قطعة', part_transferred:'القطعة في الطريق',
+    awaiting_technician_rejection:'⚠️ انتظار تأكيد الفني',
+    ready:'جاهز', delivered:'تم التسليم',
     rejected:'مرفوض', cancelled:'ملغي'
   }
 
@@ -382,12 +384,21 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
       <div>
         <div className="text-xs text-muted mb-2" style={{ fontWeight:600, letterSpacing:'.04em', textTransform:'uppercase' }}>سجل التغييرات</div>
         <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:160, overflowY:'auto' }}>
-          {(t.history || []).map((h, i) => (
+          {(t.history || []).map((h, i) => {
+            const isAuto = !h.changed_by_name
+            return (
             <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-              <div style={{ width:8, height:8, borderRadius:'50%', background:'var(--blue)', marginTop:4, flexShrink:0 }}/>
+              <div style={{
+                width:8, height:8, borderRadius:'50%', marginTop:4, flexShrink:0,
+                background: isAuto ? 'var(--muted)' : 'var(--blue)'
+              }}/>
               <div>
                 <div style={{ fontSize:12, color:'var(--text-2)' }}>
-                  <span style={{ fontWeight:500 }}>{h.changed_by_name || 'النظام'}</span>
+                  {isAuto ? (
+                    <span style={{ color:'var(--muted)', fontStyle:'italic', fontSize:11 }}>⚙ إجراء تلقائي</span>
+                  ) : (
+                    <span style={{ fontWeight:500 }}>{h.changed_by_name}</span>
+                  )}
                   {' → '}
                   <span className="text-blue">{STATUS_LABELS_AR[h.new_status] || h.new_status}</span>
                 </div>
@@ -395,7 +406,7 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
                 <div className="text-xs text-muted font-mono">{h.created_at ? new Date(h.created_at).toLocaleString('ar-SA') : ''}</div>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </div>
 
@@ -851,6 +862,8 @@ function NewTicketModal({ onClose, onSuccess }) {
 // ── لوحة تعديل التذكرة + إدارة القطع ─────────────────────
 function TicketEditPanel({ ticket, onUpdate }) {
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const canManageParts = ['admin','branch_manager','warehouse'].includes(user?.role)
   const [tab, setTab] = useState(null)  // null | 'edit' | 'parts'
   const [problem, setProblem] = useState(ticket.problem_desc || '')
   const [deviceType, setDeviceType] = useState(ticket.device_type || 'smartphone')
@@ -972,7 +985,7 @@ function TicketEditPanel({ ticket, onUpdate }) {
                       {(Number(p.unit_price)*Number(p.quantity)).toLocaleString()} ر
                     </span>
                     <button className="btn-icon" onClick={() => removePart.mutate(p.id)}
-                      title="حذف وإرجاع للمخزون" style={{ color:'var(--red)' }}>
+                      title="حذف وإرجاع للمخزون" style={{ color:'var(--red)', display: canManageParts ? 'flex' : 'none' }}>
                       <Trash2 size={13}/>
                     </button>
                   </div>

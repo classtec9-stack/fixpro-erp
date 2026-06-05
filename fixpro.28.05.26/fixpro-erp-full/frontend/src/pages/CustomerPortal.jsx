@@ -14,6 +14,8 @@ const STATUS_CONFIG = {
   waiting_approval: { label:'في انتظار موافقتك',     icon:'⏳', color:'#F59E0B', desc:'يرجى التواصل معنا للموافقة على تكلفة الإصلاح' },
   in_repair:        { label:'داخل الورشة للإصلاح',   icon:'🔧', color:'#F59E0B', desc:'يعمل الفني على إصلاح جهازك الآن' },
   waiting_part:     { label:'في انتظار قطعة غيار',   icon:'📦', color:'#F97316', desc:'تم طلب قطعة الغيار وسيبدأ الإصلاح عند وصولها' },
+  part_transferred: { label:'القطعة في الطريق',       icon:'🚀', color:'#8B5CF6', desc:'تم تحويل القطعة للفني وسيبدأ الإصلاح قريباً' },
+  awaiting_technician_rejection: { label:'قيد المراجعة', icon:'⚠️', color:'#F97316', desc:'جهازك قيد المراجعة، سنتواصل معك قريباً' },
   ready:            { label:'جاهز للاستلام! 🎉',     icon:'✅', color:'#10B981', desc:'جهازك جاهز يمكنك الحضور لاستلامه' },
   delivered:        { label:'تم التسليم',             icon:'🏠', color:'#6B7280', desc:'تم تسليم الجهاز بنجاح' },
   rejected:         { label:'لم يتم الإصلاح',        icon:'❌', color:'#EF4444', desc:'نأسف، لم نتمكن من إصلاح الجهاز. يمكنك استلامه.' },
@@ -24,6 +26,8 @@ const HISTORY_LABELS = {
   new:'تم الاستلام', quick_check:'بدء الفحص المبدئي',
   diagnosing:'بدء التشخيص', waiting_approval:'انتظار موافقة العميل',
   in_repair:'بدء الإصلاح', waiting_part:'انتظار قطعة غيار',
+  part_transferred:'القطعة في الطريق',
+  awaiting_technician_rejection:'قيد مراجعة الفني',
   ready:'الجهاز جاهز', delivered:'تم التسليم',
   rejected:'لم يتم الإصلاح', cancelled:'تم الإلغاء'
 }

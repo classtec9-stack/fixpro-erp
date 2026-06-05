@@ -6,9 +6,13 @@ const STATUS_MAP = {
   diagnosing:   { label: 'قيد الفحص',     cls: 'badge-diag' },
   in_repair:    { label: 'قيد الإصلاح',   cls: 'badge-repair' },
   waiting_part: { label: 'انتظار قطعة',   cls: 'badge-wait' },
+  waiting_approval: { label: 'انتظار موافقة', cls: 'badge-wait' },
+  part_transferred: { label: 'القطعة في الطريق', cls: 'badge-diag' },
+  awaiting_technician_rejection: { label: 'انتظار الفني', cls: 'badge-cancel' },
   ready:        { label: 'جاهز',           cls: 'badge-ready' },
   delivered:    { label: 'تم التسليم',    cls: 'badge-done' },
   cancelled:    { label: 'ملغي',           cls: 'badge-cancel' },
+  rejected:     { label: 'مرفوض',          cls: 'badge-cancel' },
 }
 
 const PRIORITY_MAP = {

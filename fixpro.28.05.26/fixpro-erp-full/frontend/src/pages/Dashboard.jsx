@@ -454,6 +454,7 @@ function StatusBreakdown({ data }) {
     in_repair:        { label:'داخل الورشة',      color:'var(--amber)' },
     waiting_part:     { label:'ينتظر قطعة',       color:'#F97316' },
     waiting_approval: { label:'انتظار موافقة',    color:'var(--amber)' },
+    awaiting_technician_rejection: { label:'انتظار تأكيد الفني', color:'#EF4444' },
     ready:            { label:'جاهز للتسليم',     color:'var(--green)' },
   }
   const total = data.reduce((s, i) => s + parseInt(i.count || 0), 0)

@@ -11,24 +11,32 @@ import { generateQR, buildTrackUrl } from '../utils/printUtils'
 export default function DeliveryReceipt({ ticket: t, onConfirm, onClose }) {
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [printed, setPrinted] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving]     = useState(false)
+  const [invoiceError, setInvoiceError] = useState(null)
 
-  // حفظ الفاتورة في النظام
+  // حفظ الفاتورة — يُرجع true إذا نجح وإلا يحفظ الخطأ
   const saveInvoice = async () => {
     try {
       await api.post(`/invoices/ticket/${t.id}/finalize`, {
         labor_cost: 0, discount: 0,
         notes: `وصل تسليم — ${new Date().toLocaleDateString('ar-SA')}`
       })
-    } catch (e) { console.warn('Invoice save:', e?.message) }
+      return true
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || 'فشل حفظ الفاتورة'
+      setInvoiceError(msg)
+      return false
+    }
   }
 
-  // تأكيد التسليم مع حفظ الفاتورة
+  // تأكيد التسليم — يُوقف إذا فشلت الفاتورة
   const handleConfirm = async () => {
+    setInvoiceError(null)
     setSaving(true)
-    await saveInvoice()
+    const ok = await saveInvoice()
     setSaving(false)
-    onConfirm()
+    if (!ok) return   // ❌ لا يُغلق — لا تتحول لـ delivered
+    onConfirm()       // ✅ فقط عند نجاح الفاتورة
   }
 
   // بيانات المحل
@@ -322,6 +330,29 @@ export default function DeliveryReceipt({ ticket: t, onConfirm, onClose }) {
             {saving ? 'جاري الحفظ...' : printed ? 'تأكيد التسليم ✅' : 'تأكيد بدون طباعة'}
           </button>
         </div>
+
+        {/* رسالة خطأ الفاتورة */}
+        {invoiceError && (
+          <div style={{
+            marginTop: 12, padding: '10px 14px',
+            background: 'rgba(239,68,68,.08)',
+            border: '1px solid rgba(239,68,68,.3)',
+            borderRadius: 8, display: 'flex', gap: 8, alignItems: 'flex-start'
+          }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+            <div>
+              <div style={{ fontWeight: 600, color: '#EF4444', fontSize: 12, marginBottom: 2 }}>
+                فشل حفظ الفاتورة — لم يتم التسليم
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+                {invoiceError}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                يرجى التواصل مع المدير أو المحاسب لحل المشكلة قبل التسليم.
+              </div>
+            </div>
+          </div>
+        )}
 
       </div>
     </div>

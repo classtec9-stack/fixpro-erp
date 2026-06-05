@@ -1,9 +1,20 @@
 const router = require('express').Router();
 const c = require('../controllers/inventory.controller');
+const adj = require('../controllers/adjustments.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 router.use(authenticate);
-router.get('/alerts', c.getLowStockAlerts);
-router.get('/parts', c.getParts);
-router.post('/parts', authorize('admin','branch_manager','warehouse'), c.createPart);
-router.post('/parts/:id/restock', authorize('admin','branch_manager','warehouse'), c.restock);
+router.get('/alerts',         c.getLowStockAlerts);
+router.get('/parts',          c.getParts);
+router.get('/parts/:id',      c.getPartById);
+router.get('/parts/:id/audit', c.getPartAuditLog);
+router.get('/movements',      c.getMovements);
+router.post('/parts',              authorize('admin','branch_manager','warehouse'), c.createPart);
+router.put('/parts/:id',           authorize('admin','branch_manager','warehouse'), c.updatePart);
+router.delete('/parts/:id',        authorize('admin','branch_manager'), c.deletePart);
+router.post('/parts/:id/restock',  authorize('admin','branch_manager','warehouse'), c.restock);
+// Adjustments
+router.get('/adjustments',         adj.getAdjustments);
+router.post('/adjustments',        authorize('admin','branch_manager','warehouse'), adj.createAdjustment);
+router.post('/adjustments/:id/approve', authorize('admin','branch_manager'), adj.approveAdjustment);
+router.post('/adjustments/:id/reject',  authorize('admin','branch_manager'), adj.rejectAdjustment);
 module.exports = router;

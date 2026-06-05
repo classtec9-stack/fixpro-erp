@@ -469,6 +469,60 @@ function TechnicianReceivePanel({ ticket, onDone, claimFirst }) {
   )
 }
 
+// ── قرار الفني عند رفض العميل ─────────────────────────
+function TechnicianRejectionPanel({ ticket, onDone, claimFirst }) {
+  const qc = useQueryClient()
+
+  const decide = useMutation({
+    mutationFn: (return_parts) =>
+      api.post(`/tickets/${ticket.id}/rejection-decision`, { return_parts }),
+    onSuccess: async (_, return_parts) => {
+      if (claimFirst) await claimFirst(
+        return_parts ? 'الفني أرجع القطعة للمخزون' : 'الفني: القطعة مركّبة'
+      ).catch(() => {})
+      toast.success(return_parts
+        ? '✅ تم إرجاع القطعة للمخزون وإغلاق التذكرة'
+        : '✅ تم إغلاق التذكرة — القطعة مركّبة')
+      qc.invalidateQueries({ queryKey: ['my-tickets'] })
+      onDone()
+    },
+    onError: e => toast.error(e?.message || 'خطأ')
+  })
+
+  return (
+    <div style={{ padding:'16px 10px' }}>
+      <div style={{ fontSize:32, textAlign:'center', marginBottom:10 }}>⚠️</div>
+      <div style={{ fontWeight:700, color:'var(--amber)', fontSize:14, textAlign:'center', marginBottom:6 }}>
+        رفض العميل الإصلاح
+      </div>
+      <div style={{ fontSize:12, color:'var(--text)', textAlign:'center', marginBottom:20, lineHeight:1.7 }}>
+        {ticket.brand} {ticket.model} — {ticket.problem_desc || ''}
+        <br/>
+        <span style={{ color:'var(--muted)', fontSize:11 }}>
+          هل تم تركيب القطعة في الجهاز؟
+        </span>
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        <button className="btn btn-primary" style={{ justifyContent:'center' }}
+          onClick={() => decide.mutate(true)}
+          disabled={decide.isPending}>
+          ↩️ لم تُركَّب — أرجعها للمخزون وأغلق التذكرة
+        </button>
+        <button className="btn" style={{
+          justifyContent:'center', background:'var(--red-dim)',
+          color:'var(--red)', border:'1px solid rgba(239,68,68,.3)'
+        }}
+          onClick={() => decide.mutate(false)}
+          disabled={decide.isPending}>
+          ✗ تم تركيبها — أغلق التذكرة بدون إرجاع
+        </button>
+        <button className="btn btn-ghost" style={{ justifyContent:'center' }}
+          onClick={onDone}>لاحقاً</button>
+      </div>
+    </div>
+  )
+}
+
 function PartRequestActions({ ticket, onDone, claimFirst, claiming }) {
   const { user } = useAuth()
   const isWarehouse = ['admin','branch_manager','warehouse'].includes(user?.role)
@@ -476,6 +530,9 @@ function PartRequestActions({ ticket, onDone, claimFirst, claiming }) {
 
   // إذا الفني — يرى زر تأكيد الاستلام فقط
   if (isTech) {
+    if (ticket.status === 'awaiting_technician_rejection') {
+      return <TechnicianRejectionPanel ticket={ticket} onDone={onDone} claimFirst={claimFirst} />
+    }
     return <TechnicianReceivePanel ticket={ticket} onDone={onDone} claimFirst={claimFirst} />
   }
   // إذا ليس مخزن ولا فني — رسالة إعلامية

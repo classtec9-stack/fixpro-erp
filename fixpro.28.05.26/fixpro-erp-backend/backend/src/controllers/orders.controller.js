@@ -229,15 +229,17 @@ const addPart = async (req, res, next) => {
     const { part_id, quantity = 1, unit_price } = req.body;
     if (!part_id) throw new AppError('معرّف القطعة مطلوب');
 
-    // قفل صف المخزون لمنع الخصم المزدوج (FOR UPDATE)
-    // لا حاجة لفحص تكرار منفصل — الـ lock يمنع التنفيذ المتزامن
-
-    // تحقق من القطعة والمخزون
+    // تحقق من القطعة والمخزون — مع التحقق أن القطعة من نفس فرع التذكرة
     const { rows: stock } = await client.query(
-      'SELECT id, name, quantity, sell_price FROM parts WHERE id=$1 FOR UPDATE',
-      [part_id]
+      `SELECT p.id, p.name, p.quantity, p.sell_price, p.min_quantity
+       FROM parts p
+       JOIN orders o ON o.id = $2
+       WHERE p.id = $1
+         AND p.branch_id = o.branch_id
+       FOR UPDATE`,
+      [part_id, req.params.id]
     );
-    if (!stock.length) throw new AppError('القطعة غير موجودة في المخزون');
+    if (!stock.length) throw new AppError('القطعة غير موجودة أو لا تخص فرع هذه التذكرة', 403);
     if (stock[0].quantity < quantity)
       throw new AppError(`الكمية المتاحة ${stock[0].quantity} فقط`);
 
@@ -278,7 +280,7 @@ const addPart = async (req, res, next) => {
       [req.params.id, transferUserId, `تحويل قطعة: ${partName} من المخزن`]
     ).catch(() => {});
 
-    // إشعار واحد فقط — للفني + المدير
+    // P0.4: إشعار الفني أو المدير عند تحويل القطعة
     query(
       `SELECT o.order_number, o.branch_id,
               u.id as tech_id, u.full_name as tech_name,
@@ -290,34 +292,49 @@ const addPart = async (req, res, next) => {
       [req.params.id, transferUserId]
     ).then(({ rows: info }) => {
       if (!info[0]) return;
-      const { notifyUser, events } = require('../utils/notify');
+      const { notifyUser, notifyRole } = require('../utils/notify');
 
-      // إشعار للفني
       if (info[0].tech_id) {
+        // الحالة الطبيعية — إشعار الفني
         notifyUser({
           userId: info[0].tech_id,
           type: 'part_request',
           orderId: req.params.id,
+          priority: 'high',
           message: `📦 وصلت قطعة: ${partName} للتذكرة ${info[0].order_number} — أكّد الاستلام`
+        }).catch(() => {});
+      } else {
+        // P0.4 — لا فني معيّن → إشعار حرج للمدير
+        console.warn('[P0.4] تذكرة', info[0].order_number, 'تحويل قطعة بدون فني:', partName);
+        notifyRole({
+          branchId: info[0].branch_id,
+          orderId: req.params.id,
+          roles: [],
+          type: 'part_request',
+          priority: 'critical',
+          message: `🚨 تنبيه حرج — ${info[0].order_number}: تم تحويل قطعة "${partName}" ولا يوجد فني معيّن لاستلامها. يرجى تعيين فني فوراً.`
         }).catch(() => {});
       }
 
-      // إشعار للمدير ومشرف الفرع
-      events.partTransferred(
-        info[0].branch_id, req.params.id, info[0].order_number,
-        partName, info[0].warehouse_name || 'المخزن'
-      ).catch(() => {});
+      // إشعار المدير ومشرف الفرع بالتحويل دائماً
+      notifyRole({
+        branchId: info[0].branch_id,
+        orderId: req.params.id,
+        roles: [],
+        type: 'part_request',
+        priority: 'normal',
+        message: `📦 تم تحويل قطعة: ${partName} للتذكرة ${info[0].order_number} — الفني: ${info[0].tech_name || 'غير معيّن'}`
+      }).catch(() => {});
 
     }).catch(() => {});
 
     // ── عمليات اختيارية أخرى ──────────────────────────
-    // تسجيل حركة المخزون (إذا الجدول موجود)
+    // تسجيل حركة المخزون
     query(
-      `INSERT INTO inventory_movements
-         (part_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
-       VALUES ($1, 'out', $2, $3, 'order', $4, $5)`,
-      [part_id, quantity, req.params.id, `قطعة صيانة: ${partName}`, req.user?.id || null]
-    ).catch(() => {/* inventory_movements غير موجود — يتم تجاهله */});
+      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
+       VALUES ($1, 'issue', $2, $3, $4, $5)`,
+      [part_id, quantity, req.params.id, `صرف مباشر: ${partName}`, req.user?.id || null]
+    ).catch(() => {});
 
     // إشعار مخزون منخفض
     if (afterQty <= minQty) {
@@ -365,10 +382,11 @@ const removePart = async (req, res, next) => {
 
     // احذف من الطلب — الـ trigger يُرجع الكمية تلقائياً (trg_restore_inventory)
     await client.query('DELETE FROM order_parts WHERE id=$1', [req.params.partId]);
-    // سجل الحركة
+
+    // سجل حركة الإرجاع
     await client.query(
-      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
-       VALUES ($1, 'in', $2, $3, 'order_return', 'إرجاع قطعة من تذكرة', $4)`,
+      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
+       VALUES ($1, 'return', $2, $3, 'إرجاع قطعة من تذكرة صيانة', $4)`,
       [op[0].part_id, op[0].quantity, req.params.id, req.user.id]
     ).catch(() => {});
 

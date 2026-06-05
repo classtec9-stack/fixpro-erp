@@ -51,7 +51,7 @@ import ServicePricesPage from './pages/ServicePrices'
 import DevicesPage    from './pages/Devices'
 import BranchSelector from './components/BranchSelector'
 import NotificationCenter from './components/NotificationCenter'
-import { CustomersPage, InventoryPage, ReportsPage } from './pages/other'
+import { CustomersPage, InventoryPage, ReportsPage, SuppliersPage } from './pages/other'
 
 function ProtectedLayout() {
   const { user } = useAuth()
@@ -73,6 +73,12 @@ function ProtectedLayout() {
   }, [user])
 
   if (!user) return <Navigate to="/login" replace />
+
+  // ── حماية المسارات حسب الدور ──────────────────────────
+  const RoleRoute = ({ element, roles }) => {
+    if (!roles || roles.includes(user?.role)) return element
+    return <Navigate to="/" replace />
+  }
 
   return (
     <BranchProvider>
@@ -100,19 +106,20 @@ function ProtectedLayout() {
             <Route path="/tickets"        element={<TicketsPage />} />
             <Route path="/devices"        element={<DevicesPage />} />
             <Route path="/customers"      element={<CustomersPage />} />
-            <Route path="/inventory"      element={<InventoryPage />} />
-            <Route path="/invoices"       element={<InvoicesPage />} />
-            <Route path="/reports"        element={<ReportsPage />} />
-            <Route path="/technicians"    element={<TechniciansPage />} />
+            <Route path="/inventory"      element={<RoleRoute element={<InventoryPage />}    roles={['admin','branch_manager','warehouse']} />} />
+            <Route path="/invoices"       element={<RoleRoute element={<InvoicesPage />}     roles={['admin','branch_manager','receptionist','accountant']} />} />
+            <Route path="/reports"        element={<RoleRoute element={<ReportsPage />}      roles={['admin','branch_manager','accountant']} />} />
+            <Route path="/technicians"    element={<RoleRoute element={<TechniciansPage />}  roles={['admin','branch_manager']} />} />
             <Route path="/notifications"  element={<NotificationsPage />} />
             <Route path="/print"          element={<PrintCenter />} />
-            <Route path="/shop-settings"  element={<ShopSettings />} />
+            <Route path="/shop-settings"  element={<RoleRoute element={<ShopSettings />}     roles={['admin','branch_manager']} />} />
             <Route path="/settings"       element={<SettingsPage />} />
-            <Route path="/printer-settings" element={<PrinterSettings />} />
-            <Route path="/branches"       element={<BranchesAdmin />} />
-            <Route path="/whatsapp"       element={<WhatsAppSettings />} />
+            <Route path="/printer-settings" element={<RoleRoute element={<PrinterSettings />} roles={['admin','branch_manager']} />} />
+            <Route path="/branches"       element={<RoleRoute element={<BranchesAdmin />}    roles={['admin']} />} />
+            <Route path="/whatsapp"       element={<RoleRoute element={<WhatsAppSettings />} roles={['admin','branch_manager']} />} />
             <Route path="/appointments"   element={<AppointmentsPage />} />
-            <Route path="/service-prices" element={<ServicePricesPage />} />
+            <Route path="/service-prices" element={<RoleRoute element={<ServicePricesPage />} roles={['admin','branch_manager']} />} />
+            <Route path="/suppliers"      element={<RoleRoute element={<SuppliersPage />}     roles={['admin','branch_manager','warehouse','accountant']} />} />
             <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>

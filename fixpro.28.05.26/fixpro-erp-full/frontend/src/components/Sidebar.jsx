@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import {
   LayoutDashboard, Wrench, Users, UserCheck, Package,
   Receipt, BarChart2, Bell, Settings, LogOut,
-  Printer, Building, Sliders, Globe, MessageCircle, CalendarDays, Tags, Monitor
+  Printer, Building, Sliders, Globe, MessageCircle, CalendarDays, Tags, Monitor, Truck
 } from 'lucide-react'
 import { useT } from '../utils/i18n'
 import { useLang } from '../context/LangContext'
@@ -18,6 +18,7 @@ const NAV = [
     { to:'/customers',     icon:Users,      key:'customers',     roles:['admin','branch_manager','receptionist','customer_service'] },
     { to:'/technicians',   icon:UserCheck,  key:'technicians',   roles:['admin','branch_manager'] },
     { to:'/inventory',     icon:Package,    key:'inventory',     roles:['admin','branch_manager','warehouse'] },
+    { to:'/suppliers',     icon:Truck,      key:'suppliers',     roles:['admin','branch_manager','warehouse','accountant'] },
     { to:'/service-prices', icon:Tags,       key:'servicePrices', roles:['admin','branch_manager'] },
   ]},
   { section_ar:'المالية', section_en:'Finance', items:[

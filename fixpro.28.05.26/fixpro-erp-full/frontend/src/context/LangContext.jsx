@@ -10,6 +10,7 @@ export const TR = {
   customers:     { ar: 'العملاء',                en: 'Customers' },
   technicians:   { ar: 'الفنيون',               en: 'Technicians' },
   inventory:     { ar: 'المخزون',               en: 'Inventory' },
+  suppliers:     { ar: 'الموردون',              en: 'Suppliers' },
   invoices:      { ar: 'الفواتير',              en: 'Invoices' },
   reports:       { ar: 'التقارير',              en: 'Reports' },
   notifications: { ar: 'الإشعارات',             en: 'Notifications' },

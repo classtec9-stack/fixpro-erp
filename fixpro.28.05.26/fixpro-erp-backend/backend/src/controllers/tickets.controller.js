@@ -15,6 +15,7 @@ const VALID_STATUSES = [
   'ready',            // جاهز للتسليم
   'delivered',        // تم التسليم
   'rejected',         // مرفوض / لم يتم الإصلاح
+  'awaiting_technician_rejection', // ينتظر تأكيد الفني عند رفض العميل
   'cancelled'         // ملغي
 ];
 
@@ -267,6 +268,16 @@ const createTicket = async (req, res, next) => {
     );
 
     res.status(201).json({ success: true, message: 'تم إنشاء التذكرة بنجاح', data: full.rows[0] });
+
+    // إشعار admin و branch_manager بالتذكرة الجديدة
+    events.newTicket(
+      req.user.branch_id,
+      rows[0].id,
+      rows[0].order_number,
+      full.rows[0]?.customer_name || '',
+      `${full.rows[0]?.brand || ''} ${full.rows[0]?.model || ''}`
+    ).catch(() => {});
+
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);
@@ -283,12 +294,35 @@ const updateTicketStatus = async (req, res, next) => {
     if (req.user.role === 'technician' && ['delivered', 'cancelled'].includes(status))
       throw new AppError('ليس لديك صلاحية هذه العملية', 403);
 
+    // receptionist لا يستطيع تغيير الحالات الفنية
+    const RECEPTIONIST_ALLOWED_STATUSES = ['new', 'diagnosing', 'ready', 'delivered', 'cancelled'];
+    if (req.user.role === 'receptionist' && !RECEPTIONIST_ALLOWED_STATUSES.includes(status))
+      throw new AppError('ليس لديك صلاحية هذه العملية', 403);
+
+    // warehouse و accountant لا يغيران الحالات
+    if (['warehouse', 'accountant'].includes(req.user.role))
+      throw new AppError('ليس لديك صلاحية تغيير حالة التذكرة', 403);
+
     const current = await query('SELECT status, technician_id FROM orders WHERE id=$1', [req.params.id]);
     if (!current.rows.length) throw new AppError('التذكرة غير موجودة', 404);
 
     // الفني يعدّل تذاكره فقط
     if (req.user.role === 'technician' && current.rows[0].technician_id !== req.user.id)
       throw new AppError('يمكنك تعديل تذاكرك فقط', 403);
+
+    // حماية الرفض المباشر — إذا توجد قطع في التذكرة يجب المرور بـ awaiting_technician_rejection
+    if (status === 'rejected') {
+      const { rows: parts } = await query(
+        'SELECT id FROM order_parts WHERE order_id = $1 LIMIT 1',
+        [req.params.id]
+      );
+      if (parts.length > 0 && current.rows[0].status !== 'awaiting_technician_rejection') {
+        throw new AppError(
+          'لا يمكن الرفض المباشر — توجد قطع مصروفة. يجب تحويل التذكرة أولاً إلى "انتظار تأكيد الفني" حتى يقرر إرجاع القطعة أو الاحتفاظ بها.',
+          400
+        );
+      }
+    }
 
     const old_status = current.rows[0].status;
 
@@ -340,41 +374,65 @@ const updateTicketStatus = async (req, res, next) => {
         branchId, req.params.id, rows[0]?.order_number || '',
         status, req.user?.full_name || req.user?.fullName || ''
       ).catch(()=>{});
+      // P0.3: إشعار الفني أو المدير عند awaiting_technician_rejection
+      if (status === 'awaiting_technician_rejection') {
+        const { notifyUser, notifyRole } = require('../utils/notify');
+        if (rows[0]?.technician_id) {
+          notifyUser({
+            userId: rows[0].technician_id,
+            type: 'part_request',
+            priority: 'high',
+            orderId: req.params.id,
+            message: `⚠️ رفض العميل الإصلاح — تذكرة ${orderNum} | هل تم تركيب القطعة؟ أكّد الإجراء`
+          }).catch(() => {});
+        } else {
+          // لا فني معيّن — إشعار حرج للمدير
+          console.warn('[P0.3] تذكرة', orderNum, 'وصلت لـ awaiting_technician_rejection بدون فني معيّن');
+          notifyRole({
+            branchId,
+            orderId: req.params.id,
+            roles: [],
+            type: 'status_change',
+            priority: 'critical',
+            message: `🚨 تنبيه حرج — ${orderNum}: رفض العميل الإصلاح ولا يوجد فني معيّن لاتخاذ قرار القطعة. يرجى تعيين فني أو اتخاذ الإجراء يدوياً.`
+          }).catch(() => {});
+        }
+      }
+
       if (status === 'ready') {
         events.deviceReady(
           branchId, req.params.id, rows[0]?.order_number || '',
           rows[0]?.customer_name || '', rows[0]?.customer_phone || ''
         ).catch(()=>{});
       }
+      // إشعار المخزن عند طلب قطعة — عبر notifyRole لضمان وصول admin
       if (status === 'waiting_part') {
         const notifMsg = note
           ? `تذكرة ${orderNum} — طلب قطعة: ${note}`
           : `تذكرة ${orderNum} تحتاج قطعة غيار`;
-
-        // ✅ FIX BE-002: Single INSERT...SELECT replaces N+1 loop
-        await query(
-          `INSERT INTO notifications (order_id, channel, recipient, message, status, type, is_read)
-           SELECT $1, 'internal', u.id, $2, 'pending', 'part_request', false
-           FROM users u
-           WHERE u.branch_id = $3 AND u.role = 'warehouse' AND u.is_active = true`,
-          [req.params.id, notifMsg, branchId]
-        ).catch(e => console.warn('notif warehouse err:', e.message));
+        events.partRequested(branchId, req.params.id, orderNum, note || 'قطعة غيار',
+          req.user?.full_name || req.user?.fullName || 'الفني'
+        ).catch(() => {});
       }
 
-      // إشعار موظفي خدمة العملاء عند انتظار موافقة
+      // إشعار خدمة العملاء عند انتظار موافقة — عبر notifyRole
       if (status === 'waiting_approval') {
-        const notifMsg = note
-          ? `تذكرة ${orderNum} — رسالة للعميل: ${note}`
-          : `تذكرة ${orderNum} تحتاج التواصل مع العميل`;
+        events.customerApprovalNeeded(
+          branchId, req.params.id, orderNum,
+          rows[0]?.customer_name || '', rows[0]?.customer_phone || ''
+        ).catch(() => {});
+      }
 
-        // ✅ FIX BE-002: Single INSERT...SELECT replaces N+1 loop
-        await query(
-          `INSERT INTO notifications (order_id, channel, recipient, message, status, type, is_read)
-           SELECT $1, 'internal', u.id, $2, 'pending', 'customer_review', false
-           FROM users u
-           WHERE u.branch_id = $3 AND u.role = 'customer_service' AND u.is_active = true`,
-          [req.params.id, notifMsg, branchId]
-        ).catch(e => console.warn('notif cs err:', e.message));
+      // م5: إشعار الفني عند موافقة العميل (waiting_approval → in_repair)
+      if (status === 'in_repair' && rows[0]?.technician_id) {
+        const { notifyUser } = require('../utils/notify');
+        notifyUser({
+          userId: rows[0].technician_id,
+          type: 'status_change',
+          priority: 'high',
+          orderId: req.params.id,
+          message: `✅ وافق العميل على الإصلاح — تذكرة ${orderNum} | ${rows[0]?.brand || ''} ${rows[0]?.model || ''} — يمكن البدء بالعمل`
+        }).catch(() => {});
       }
 
       // إشعار الفني عند إسناد تذكرة جديدة
@@ -400,6 +458,31 @@ const updateTicketStatus = async (req, res, next) => {
       );
       const shop = shopRows[0] || {};
       const trackUrl = `https://${shop.track_url || 'fixpro.sa/track'}/${rows[0].order_number}`;
+
+      // P0.3: إشعار الفني أو المدير عند awaiting_technician_rejection
+      if (status === 'awaiting_technician_rejection') {
+        const { notifyUser, notifyRole } = require('../utils/notify');
+        if (rows[0]?.technician_id) {
+          notifyUser({
+            userId: rows[0].technician_id,
+            type: 'part_request',
+            priority: 'high',
+            orderId: req.params.id,
+            message: `⚠️ رفض العميل الإصلاح — تذكرة ${orderNum} | هل تم تركيب القطعة؟ أكّد الإجراء`
+          }).catch(() => {});
+        } else {
+          // لا فني معيّن — إشعار حرج للمدير
+          console.warn('[P0.3] تذكرة', orderNum, 'وصلت لـ awaiting_technician_rejection بدون فني معيّن');
+          notifyRole({
+            branchId,
+            orderId: req.params.id,
+            roles: [],
+            type: 'status_change',
+            priority: 'critical',
+            message: `🚨 تنبيه حرج — ${orderNum}: رفض العميل الإصلاح ولا يوجد فني معيّن لاتخاذ قرار القطعة. يرجى تعيين فني أو اتخاذ الإجراء يدوياً.`
+          }).catch(() => {});
+        }
+      }
 
       if (status === 'ready') {
         const t = { ...rows[0], customer_name: rows[0].customer_name, customer_phone: rows[0].customer_phone, brand: rows[0].brand, model: rows[0].model };
@@ -622,7 +705,7 @@ const getDevicesBoard = async (req, res, next) => {
 
     // تجميع بالحالة
     const board = {};
-    const STATUS_ORDER = ['new','quick_check','diagnosing','waiting_approval','in_repair','waiting_part','part_transferred','ready','rejected'];
+    const STATUS_ORDER = ['new','quick_check','diagnosing','waiting_approval','in_repair','waiting_part','part_transferred','awaiting_technician_rejection','ready','rejected'];
     STATUS_ORDER.forEach(s => board[s] = []);
     rows.forEach(r => {
       if (board[r.status]) board[r.status].push(r);
@@ -696,10 +779,76 @@ const updateTicket = async (req, res, next) => {
   } finally { client.release(); }
 };
 
+// POST /api/tickets/:id/rejection-decision
+// الفني يقرر: هل يُرجع القطعة أم لا عند رفض العميل
+const rejectionDecision = async (req, res, next) => {
+  const client = await getClient();
+  try {
+    const { return_parts } = req.body; // true = إرجاع، false = لا إرجاع
+    const { rows: ticket } = await query(
+      `SELECT o.*, u.id as tech_id
+       FROM orders o LEFT JOIN users u ON u.id = o.technician_id
+       WHERE o.id = $1
+         AND ($2::uuid IS NULL OR o.branch_id = $2)`,
+      [req.params.id, req.user.branch_id || null]
+    );
+    if (!ticket.length) throw new AppError('التذكرة غير موجودة', 404);
+    if (ticket[0].status !== 'awaiting_technician_rejection')
+      throw new AppError('التذكرة ليست في مرحلة انتظار قرار الفني', 400);
+
+    // تحقق أن المستخدم هو الفني المعيّن أو مدير
+    if (!['admin','branch_manager'].includes(req.user.role) &&
+        ticket[0].technician_id !== req.user.id)
+      throw new AppError('يمكن للفني المعيّن فقط اتخاذ هذا القرار', 403);
+
+    await client.query('BEGIN');
+
+    if (return_parts) {
+      // الفني يُرجع القطع — احذف من order_parts وtrg_restore_inventory يعيدها
+      const { rows: parts } = await client.query(
+        'SELECT * FROM order_parts WHERE order_id = $1',
+        [req.params.id]
+      );
+
+      for (const p of parts) {
+        await client.query('DELETE FROM order_parts WHERE id = $1', [p.id]);
+        // تسجيل الإرجاع
+        await client.query(
+          `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
+           VALUES ($1, 'return', $2, $3, 'إرجاع قطعة — رفض العميل', $4)`,
+          [p.part_id, p.quantity, req.params.id, req.user.id]
+        ).catch(() => {});
+      }
+    }
+
+    // أغلق التذكرة كمرفوضة
+    await client.query(
+      `SELECT set_config('app.current_user_id', $1, true)`,
+      [req.user.id.toString()]
+    ).catch(() => {});
+
+    await client.query(
+      `UPDATE orders SET status = 'rejected', updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+
+    await client.query('COMMIT');
+
+    const msg = return_parts
+      ? 'تم إرجاع القطع للمخزون وإغلاق التذكرة كمرفوضة'
+      : 'تم إغلاق التذكرة كمرفوضة — القطعة مركّبة';
+
+    res.json({ success: true, message: msg });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally { client.release(); }
+};
+
 module.exports = {
   getTickets, updateTicket, getTicketById, createTicket,
   updateTicketStatus, assignTechnician,
   convertToRepair, getStatusBoard,
   getAbandonedTickets, getPublicStatus,
-  getDevicesBoard
+  getDevicesBoard, rejectionDecision
 };

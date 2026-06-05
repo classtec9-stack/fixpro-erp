@@ -24,7 +24,16 @@ router.post('/:id/convert',  authorize('admin','branch_manager','receptionist'),
 
 // ── إدارة القطع ───────────────────────────────────────
 router.get('/:id/parts', ordersCtrl.getOrderParts);
-router.post('/:id/parts', ordersCtrl.addPart);           // المخزن يضيف ← يخصم تلقائياً
-router.delete('/:id/parts/:partId', ordersCtrl.removePart);
+router.post('/:id/parts',
+  authorize('admin','branch_manager','warehouse'),
+  ordersCtrl.addPart);
+router.delete('/:id/parts/:partId',
+  authorize('admin','branch_manager','warehouse'),
+  ordersCtrl.removePart);
+
+// ── قرار الفني عند رفض العميل ─────────────────────────
+router.post('/:id/rejection-decision',
+  authorize('admin','branch_manager','technician'),
+  c.rejectionDecision);
 
 module.exports = router;

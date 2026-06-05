@@ -81,11 +81,17 @@ const approveRequest = async (req, res, next) => {
     if (pr.status !== 'pending') throw new AppError('تم معالجة هذا الطلب مسبقاً', 409);
     if (!pr.part_id) throw new AppError('هذه القطعة غير مرتبطة بالمخزون — أضفها يدوياً', 400);
 
-    // تحقق من المخزون
+    // تحقق من المخزون — مع التحقق أن القطعة من نفس فرع التذكرة
     const { rows: stock } = await client.query(
-      'SELECT quantity, sell_price, name FROM parts WHERE id=$1 FOR UPDATE', [pr.part_id]
+      `SELECT p.quantity, p.sell_price, p.name
+       FROM parts p
+       JOIN orders o ON o.id = $2
+       WHERE p.id = $1
+         AND p.branch_id = o.branch_id
+       FOR UPDATE`,
+      [pr.part_id, pr.order_id]
     );
-    if (!stock.length) throw new AppError('القطعة غير موجودة في المخزون', 404);
+    if (!stock.length) throw new AppError('القطعة غير موجودة أو لا تخص فرع هذه التذكرة', 403);
     if (stock[0].quantity < pr.quantity)
       throw new AppError(`الكمية المتاحة ${stock[0].quantity} فقط`);
 
@@ -97,18 +103,14 @@ const approveRequest = async (req, res, next) => {
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [pr.order_id, pr.part_id, pr.quantity, price, req.user.id, pr.id]
     );
+    // trg_deduct_inventory يخصم تلقائياً عند INSERT — لا خصم يدوي هنا
 
-    // 2. اخصم من المخزون (الخصم الوحيد في النظام)
+    // 3. سجل حركة المخزون (issue)
     await client.query(
-      'UPDATE parts SET quantity = quantity - $1 WHERE id = $2',
-      [pr.quantity, pr.part_id]
-    );
-
-    // 3. سجل حركة المخزون
-    await client.query(
-      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
-       VALUES ($1, 'out', $2, $3, 'order', 'تحويل قطعة لتذكرة صيانة', $4)`,
-      [pr.part_id, pr.quantity, pr.order_id, req.user.id]
+      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
+       VALUES ($1, 'issue', $2, $3, $4, $5)`,
+      [pr.part_id, pr.quantity, pr.order_id,
+       `صرف قطعة لتذكرة صيانة — ${stock[0].name}`, req.user.id]
     ).catch(() => {});
 
     // 4. حدّث حالة الطلب
