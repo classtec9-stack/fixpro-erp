@@ -167,26 +167,31 @@ const createTicket = async (req, res, next) => {
     let cust_id = customer_id;
     let dev_id = device_id;
 
-    // إنشاء عميل جديد أو جلبه إذا كان موجوداً (بدون ON CONFLICT)
+    // D3: رقم الجوال = الهوية المنطقية للعميل
     if (!cust_id) {
       if (!customer_name || !customer_phone) throw new AppError('اسم العميل ورقم الجوال مطلوبان');
-      
-      // ابحث عن العميل أولاً برقم الجوال
+
       const existingCust = await client.query(
-        'SELECT id FROM customers WHERE phone = $1 AND branch_id = $2 LIMIT 1',
+        'SELECT id, full_name FROM customers WHERE phone = $1 AND branch_id = $2 LIMIT 1',
         [customer_phone, req.user.branch_id]
       );
-      
+
       if (existingCust.rows.length > 0) {
-        // العميل موجود — استخدم نفس ID
-        cust_id = existingCust.rows[0].id;
-        // تحديث الاسم إذا تغيّر
-        await client.query(
-          'UPDATE customers SET full_name = $1 WHERE id = $2',
-          [customer_name, cust_id]
-        );
+        const existing = existingCust.rows[0];
+        // إذا الاسم مختلف — لا تُحدَّث تلقائياً
+        if (existing.full_name !== customer_name) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            success: false,
+            code: 'CUSTOMER_NAME_CONFLICT',
+            message: `هذا الرقم مسجل باسم: ${existing.full_name}`,
+            data: { existing_id: existing.id, existing_name: existing.full_name, new_name: customer_name }
+          });
+        }
+        // نفس الاسم — استخدم العميل الموجود
+        cust_id = existing.id;
       } else {
-        // عميل جديد — أنشئه
+        // عميل جديد
         const custRes = await client.query(
           `INSERT INTO customers (branch_id, full_name, phone, email)
            VALUES ($1,$2,$3,$4) RETURNING id`,
@@ -310,21 +315,53 @@ const updateTicketStatus = async (req, res, next) => {
     if (req.user.role === 'technician' && current.rows[0].technician_id !== req.user.id)
       throw new AppError('يمكنك تعديل تذاكرك فقط', 403);
 
-    // حماية الرفض المباشر — إذا توجد قطع في التذكرة يجب المرور بـ awaiting_technician_rejection
+    const old_status = current.rows[0].status;
+
+    // ── D1: Rejection Guards ─────────────────────────────────
     if (status === 'rejected') {
-      const { rows: parts } = await query(
-        'SELECT id FROM order_parts WHERE order_id = $1 LIMIT 1',
+
+      // [F] delivered → ممنوع نهائياً
+      if (old_status === 'delivered')
+        throw new AppError('التذكرة مُسلَّمة — لا يمكن رفضها. أنشئ تذكرة جديدة (ضمان أو استبدال).', 400);
+
+      // [E] فاتورة موجودة → ممنوع حتى إلغائها
+      const { rows: invRows } = await query(
+        "SELECT id FROM invoices WHERE order_id=$1 AND status != 'cancelled' LIMIT 1",
         [req.params.id]
       );
-      if (parts.length > 0 && current.rows[0].status !== 'awaiting_technician_rejection') {
-        throw new AppError(
-          'لا يمكن الرفض المباشر — توجد قطع مصروفة. يجب تحويل التذكرة أولاً إلى "انتظار تأكيد الفني" حتى يقرر إرجاع القطعة أو الاحتفاظ بها.',
-          400
+      if (invRows.length > 0)
+        throw new AppError('توجد فاتورة نشطة — يجب إلغاء الفاتورة أولاً قبل رفض التذكرة.', 400);
+
+      // [C] waiting_part → branch_manager/admin فقط
+      if (old_status === 'waiting_part') {
+        if (!['admin','branch_manager'].includes(req.user.role))
+          throw new AppError('رفض التذكرة أثناء انتظار القطعة يتطلب صلاحية مشرف فرع أو مدير.', 403);
+        // إلغاء طلبات القطع المعلقة
+        await query(
+          "UPDATE part_requests SET status='cancelled' WHERE order_id=$1 AND status='pending'",
+          [req.params.id]
+        ).catch(() => {});
+      }
+
+      // [D] ready → branch_manager/admin فقط
+      if (old_status === 'ready') {
+        if (!['admin','branch_manager'].includes(req.user.role))
+          throw new AppError('رفض التذكرة بعد الجاهزية يتطلب صلاحية مشرف فرع أو مدير.', 403);
+      }
+
+      // [B/C] قطع مصروفة → يجب المرور بـ awaiting_technician_rejection
+      if (!['waiting_part','ready'].includes(old_status)) {
+        const { rows: parts } = await query(
+          'SELECT id FROM order_parts WHERE order_id=$1 LIMIT 1',
+          [req.params.id]
         );
+        if (parts.length > 0 && old_status !== 'awaiting_technician_rejection')
+          throw new AppError(
+            'توجد قطع مصروفة — يجب تحويل التذكرة إلى "انتظار تأكيد الفني" أولاً حتى يقرر الفني إرجاع القطعة.',
+            400
+          );
       }
     }
-
-    const old_status = current.rows[0].status;
 
     // حالات خاصة
     const extra = {};
@@ -415,24 +452,37 @@ const updateTicketStatus = async (req, res, next) => {
         ).catch(() => {});
       }
 
-      // إشعار خدمة العملاء عند انتظار موافقة — عبر notifyRole
+      // إشعار خدمة العملاء عند انتظار موافقة — مع الملاحظات
       if (status === 'waiting_approval') {
         events.customerApprovalNeeded(
           branchId, req.params.id, orderNum,
-          rows[0]?.customer_name || '', rows[0]?.customer_phone || ''
+          rows[0]?.customer_name || '', rows[0]?.customer_phone || '',
+          note || ''
         ).catch(() => {});
       }
 
-      // م5: إشعار الفني عند موافقة العميل (waiting_approval → in_repair)
+      // إشعار الفني عند in_repair — يختلف حسب الحالة السابقة
       if (status === 'in_repair' && rows[0]?.technician_id) {
         const { notifyUser } = require('../utils/notify');
-        notifyUser({
-          userId: rows[0].technician_id,
-          type: 'status_change',
-          priority: 'high',
-          orderId: req.params.id,
-          message: `✅ وافق العميل على الإصلاح — تذكرة ${orderNum} | ${rows[0]?.brand || ''} ${rows[0]?.model || ''} — يمكن البدء بالعمل`
-        }).catch(() => {});
+        if (old_status === 'waiting_approval') {
+          // موافقة حقيقية من العميل
+          notifyUser({
+            userId: rows[0].technician_id,
+            type: 'status_change',
+            priority: 'high',
+            orderId: req.params.id,
+            message: `✅ وافق العميل على الإصلاح — تذكرة ${orderNum} | ${rows[0]?.brand || ''} ${rows[0]?.model || ''} — يمكن البدء بالعمل`
+          }).catch(() => {});
+        } else if (old_status === 'part_transferred') {
+          // الفني أكّد استلام القطعة — لا علاقة بموافقة العميل
+          notifyUser({
+            userId: rows[0].technician_id,
+            type: 'status_change',
+            priority: 'normal',
+            orderId: req.params.id,
+            message: `🔧 تم استلام القطعة وبدأ الإصلاح — تذكرة ${orderNum}`
+          }).catch(() => {});
+        }
       }
 
       // إشعار الفني عند إسناد تذكرة جديدة
@@ -811,12 +861,26 @@ const rejectionDecision = async (req, res, next) => {
       );
 
       for (const p of parts) {
+        // جلب الكمية الحالية قبل الحذف
+        const { rows: beforePart } = await client.query(
+          'SELECT quantity, avg_cost, cost_price, branch_id FROM parts WHERE id = $1',
+          [p.part_id]
+        );
+        const qtyBefore = beforePart[0]?.quantity || 0;
+        const qtyAfter  = qtyBefore + p.quantity;  // بعد trigger الإرجاع
+        const branchId  = beforePart[0]?.branch_id;
+        const unitCost  = parseFloat(beforePart[0]?.avg_cost) || parseFloat(beforePart[0]?.cost_price) || 0;
+
         await client.query('DELETE FROM order_parts WHERE id = $1', [p.id]);
-        // تسجيل الإرجاع
+
+        // تسجيل الإرجاع — كامل
         await client.query(
-          `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
-           VALUES ($1, 'return', $2, $3, 'إرجاع قطعة — رفض العميل', $4)`,
-          [p.part_id, p.quantity, req.params.id, req.user.id]
+          `INSERT INTO inventory_movements
+             (part_id, branch_id, movement_type, quantity, quantity_before, quantity_after,
+              unit_cost, reference_id, reference_type, notes, created_by)
+           VALUES ($1,$2,'return',$3,$4,$5,$6,$7,'order','إرجاع قطعة — رفض العميل',$8)`,
+          [p.part_id, branchId, p.quantity, qtyBefore, qtyAfter,
+           unitCost, req.params.id, req.user.id]
         ).catch(() => {});
       }
     }

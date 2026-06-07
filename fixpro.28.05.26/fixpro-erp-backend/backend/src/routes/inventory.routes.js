@@ -6,7 +6,7 @@ router.use(authenticate);
 router.get('/alerts',         c.getLowStockAlerts);
 router.get('/parts',          c.getParts);
 router.get('/parts/:id',      c.getPartById);
-router.get('/parts/:id/audit', c.getPartAuditLog);
+router.get('/parts/:id/audit', authorize('admin','branch_manager','accountant'), c.getPartAuditLog);
 router.get('/movements',      c.getMovements);
 router.post('/parts',              authorize('admin','branch_manager','warehouse'), c.createPart);
 router.put('/parts/:id',           authorize('admin','branch_manager','warehouse'), c.updatePart);

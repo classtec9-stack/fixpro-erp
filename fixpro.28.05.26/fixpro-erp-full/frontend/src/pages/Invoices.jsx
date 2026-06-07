@@ -435,7 +435,27 @@ function InvoiceDetailModal({ invoice: inv, onClose, onUpdate }) {
   }
 
   const st = STATUS[inv.status] || STATUS.pending
-  const canPay = !['paid','cancelled'].includes(inv.status) && Number(inv.balance_due) > 0
+  const canPay    = !['paid','cancelled'].includes(inv.status) && Number(inv.balance_due) > 0
+  const canCancel = !['paid','cancelled'].includes(inv.status)
+  const canRefund = ['paid','partial'].includes(inv.status) && Number(inv.paid_amount) > 0
+
+  const [showCancel, setShowCancel] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
+  const [showRefund, setShowRefund]   = useState(false)
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundReason, setRefundReason] = useState('')
+
+  const cancelMutation = useMutation({
+    mutationFn: () => api.post(`/invoices/${inv.id}/cancel`, { reason: cancelReason }),
+    onSuccess: () => { toast.success('تم إلغاء الفاتورة ✅'); setShowCancel(false); qc.invalidateQueries(['invoices']) },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+
+  const refundMutation = useMutation({
+    mutationFn: () => api.post(`/invoices/${inv.id}/refund`, { amount: parseFloat(refundAmount), reason: refundReason }),
+    onSuccess: () => { toast.success('تم تسجيل الاسترداد ✅'); setShowRefund(false); qc.invalidateQueries(['invoices']) },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
 
   return (
     <Modal open={true} onClose={onClose}
@@ -458,6 +478,18 @@ function InvoiceDetailModal({ invoice: inv, onClose, onUpdate }) {
           {canPay && (
             <button className="btn btn-primary" onClick={() => setShowPay(!showPay)}>
               <DollarSign size={13}/> تسجيل دفعة
+            </button>
+          )}
+          {canRefund && (
+            <button className="btn btn-sm" style={{ background:'rgba(245,158,11,.1)', color:'var(--amber)', border:'1px solid rgba(245,158,11,.3)' }}
+              onClick={() => setShowRefund(!showRefund)}>
+              ↩️ استرداد
+            </button>
+          )}
+          {canCancel && (
+            <button className="btn btn-sm" style={{ background:'rgba(239,68,68,.1)', color:'var(--red)', border:'1px solid rgba(239,68,68,.3)' }}
+              onClick={() => setShowCancel(!showCancel)}>
+              ✗ إلغاء الفاتورة
             </button>
           )}
         </div>
@@ -532,6 +564,50 @@ function InvoiceDetailModal({ invoice: inv, onClose, onUpdate }) {
               {pay.isPending ? 'جاري...' : '✓ تأكيد الدفعة'}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowPay(false)}>إلغاء</button>
+          </div>
+        </div>
+      )}
+
+      {/* نموذج الإلغاء */}
+      {showCancel && (
+        <div style={{ marginTop:10, padding:14, background:'rgba(239,68,68,.06)', borderRadius:8, border:'1px solid rgba(239,68,68,.2)' }}>
+          <div style={{ fontWeight:600, color:'var(--red)', marginBottom:8, fontSize:13 }}>✗ إلغاء الفاتورة</div>
+          <div style={{ fontSize:12, color:'var(--muted)', marginBottom:10 }}>
+            لا يمكن إلغاء فاتورة مدفوعة — إذا دفع العميل استخدم الاسترداد.
+          </div>
+          <input className="form-input" value={cancelReason} onChange={e => setCancelReason(e.target.value)}
+            placeholder="سبب الإلغاء..." style={{ marginBottom:8 }}/>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost btn-sm" style={{ flex:1 }} onClick={() => setShowCancel(false)}>إلغاء</button>
+            <button className="btn btn-sm" style={{ flex:1, background:'var(--red)', color:'#fff', border:'none' }}
+              onClick={() => cancelMutation.mutate()} disabled={!cancelReason || cancelMutation.isPending}>
+              {cancelMutation.isPending ? 'جاري...' : 'تأكيد الإلغاء'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* نموذج الاسترداد */}
+      {showRefund && (
+        <div style={{ marginTop:10, padding:14, background:'rgba(245,158,11,.06)', borderRadius:8, border:'1px solid rgba(245,158,11,.2)' }}>
+          <div style={{ fontWeight:600, color:'var(--amber)', marginBottom:8, fontSize:13 }}>↩️ استرداد مبلغ</div>
+          <div style={{ fontSize:12, color:'var(--muted)', marginBottom:10 }}>
+            المدفوع حتى الآن: <strong>{Number(inv.paid_amount).toLocaleString()} ريال</strong>
+          </div>
+          <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+            <input className="form-input" type="number" min="0.01" max={inv.paid_amount}
+              value={refundAmount} onChange={e => setRefundAmount(e.target.value)}
+              placeholder="المبلغ..." style={{ flex:1 }}/>
+            <input className="form-input" value={refundReason} onChange={e => setRefundReason(e.target.value)}
+              placeholder="سبب الاسترداد *" style={{ flex:2 }}/>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost btn-sm" style={{ flex:1 }} onClick={() => setShowRefund(false)}>إلغاء</button>
+            <button className="btn btn-sm" style={{ flex:1, background:'var(--amber)', color:'#fff', border:'none' }}
+              onClick={() => refundMutation.mutate()}
+              disabled={!refundAmount || !refundReason || refundMutation.isPending}>
+              {refundMutation.isPending ? 'جاري...' : 'تأكيد الاسترداد'}
+            </button>
           </div>
         </div>
       )}

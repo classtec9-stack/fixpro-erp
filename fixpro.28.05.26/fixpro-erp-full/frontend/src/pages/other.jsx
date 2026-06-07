@@ -92,6 +92,24 @@ export function InventoryPage() {
 
   const [activeTab, setActiveTab]           = useState('parts') // 'parts' | 'movements'
   const [selectedPartId, setSelectedPartId] = useState(null)
+  const [defectivePartTarget, setDefectivePartTarget] = useState(null)
+  const [defectiveQty, setDefectiveQty]       = useState(1)
+  const [defectiveReason, setDefectiveReason] = useState('')
+
+  const sendToDefective = useMutation({
+    mutationFn: () => api.post('/defective', {
+      part_id: defectivePartTarget.id,
+      quantity: defectiveQty,
+      source_type: 'stock',
+      reason: defectiveReason
+    }),
+    onSuccess: () => {
+      toast.success('✅ تم نقل القطعة لمنطقة التوالف')
+      setDefectivePartTarget(null); setDefectiveReason(''); setDefectiveQty(1)
+      qc.invalidateQueries(['parts'])
+    },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
 
   const [search, setSearch]                 = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -129,10 +147,31 @@ export function InventoryPage() {
     setShowAddCat(false); setNewCatName(''); qc.invalidateQueries(['parts']); toast.success('تم إضافة القسم')
   }
 
+  const [similarParts,   setSimilarParts]   = useState([])  // اقتراحات مشابهة
+  const [duplicatePart,  setDuplicatePart]  = useState(null) // تطابق كامل
+
   const addPart = useMutation({
-    mutationFn: () => api.post('/inventory/parts', form),
-    onSuccess: () => { toast.success('تم إضافة القطعة ✅'); setShowAddPart(false); qc.invalidateQueries(['parts']); setForm({ name:'',category:'',quantity:0,min_quantity:5,cost_price:0,sell_price:0,supplier_id:'',location:'',brand_compat:'' }) },
-    onError: err => toast.error(err?.message || 'خطأ')
+    mutationFn: (forceCreate = false) => api.post('/inventory/parts', { ...form, force_create: forceCreate }),
+    onSuccess: (res) => {
+      // SIMILAR_PARTS_FOUND — HTTP 200 مع code خاص
+      if (res.data?.code === 'SIMILAR_PARTS_FOUND') {
+        setSimilarParts(res.data.data?.suggestions || [])
+        return
+      }
+      toast.success('تم إضافة القطعة ✅')
+      setShowAddPart(false)
+      setSimilarParts([])
+      qc.invalidateQueries(['parts'])
+      setForm({ name:'',category:'',quantity:0,min_quantity:5,cost_price:0,sell_price:0,supplier_id:'',location:'',brand_compat:'' })
+    },
+    onError: (err) => {
+      const data = err?.response?.data
+      if (data?.code === 'DUPLICATE_PART') {
+        setDuplicatePart(data.data?.existing)
+        return
+      }
+      toast.error(data?.message || 'خطأ')
+    }
   })
 
   const updatePart = useMutation({
@@ -235,6 +274,8 @@ export function InventoryPage() {
                             onClick={() => { setRestockPart(p); setRestockQty(1) }}><ChevronUp size={14}/></button>
                           <button title="تعديل" className="btn-icon" style={{ color:'var(--blue)' }}
                             onClick={() => setEditPart({ ...p })}><Edit2 size={14}/></button>
+                          <button title="نقل للتوالف" className="btn-icon" style={{ color:'var(--amber)' }}
+                            onClick={() => setDefectivePartTarget(p)}><AlertTriangle size={14}/></button>
                           {canDelete && (
                             <button title="حذف" className="btn-icon" style={{ color:'var(--red)' }}
                               onClick={() => setDeletePart_(p)}><Trash2 size={14}/></button>
@@ -255,6 +296,49 @@ export function InventoryPage() {
       {activeTab === 'adjustments' && <AdjustmentsTab />}
       {selectedPartId && (
         <PartDetailModal partId={selectedPartId} onClose={() => setSelectedPartId(null)} />
+      )}
+
+      {/* نافذة نقل للتوالف */}
+      {defectivePartTarget && (
+        <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,.7)',
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e => e.target===e.currentTarget && setDefectivePartTarget(null)}>
+          <div style={{ background:'var(--ink-2)', borderRadius:12, padding:24, maxWidth:400, width:'100%',
+            border:'1px solid var(--border)' }}>
+            <div style={{ fontWeight:700, fontSize:14, color:'var(--amber)', marginBottom:8 }}>
+              ⚠️ نقل قطعة لمنطقة التوالف
+            </div>
+            <div style={{ fontSize:13, color:'var(--text-2)', marginBottom:4 }}>
+              <strong>{defectivePartTarget.name}</strong>
+            </div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:16 }}>
+              الكمية الحالية في المخزون: {defectivePartTarget.quantity}
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+              <div className="form-group">
+                <label className="form-label">الكمية التالفة</label>
+                <input className="form-input" type="number" min="1" max={defectivePartTarget.quantity}
+                  value={defectiveQty} onChange={e => setDefectiveQty(Math.max(1, Math.min(parseInt(e.target.value)||1, defectivePartTarget.quantity)))}/>
+              </div>
+              <div className="form-group">
+                <label className="form-label">سبب التلف *</label>
+                <input className="form-input" value={defectiveReason}
+                  onChange={e => setDefectiveReason(e.target.value)}
+                  placeholder="مثال: معيبة من المصنع، تلف في التخزين..."/>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:16 }}>
+              <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => setDefectivePartTarget(null)}>إلغاء</button>
+              <button style={{ flex:1, padding:'8px', borderRadius:8, border:'none', cursor:'pointer',
+                background:'var(--amber)', color:'#fff', fontWeight:600, fontSize:12,
+                opacity: !defectiveReason || sendToDefective.isPending ? .6 : 1 }}
+                onClick={() => sendToDefective.mutate()}
+                disabled={!defectiveReason || sendToDefective.isPending}>
+                {sendToDefective.isPending ? 'جاري...' : '⚠️ نقل للتوالف'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {activeTab === 'parts' && (<>
       <Modal open={!!restockPart} onClose={() => setRestockPart(null)}
@@ -344,12 +428,45 @@ export function InventoryPage() {
         </div>
       </Modal>
 
-      {/* إضافة صنف جديد */}
-      <Modal open={showAddPart} onClose={() => setShowAddPart(false)} title="إضافة صنف جديد"
-        footer={<><button className="btn btn-ghost" onClick={() => setShowAddPart(false)}>إلغاء</button>
-          <button className="btn btn-primary" onClick={() => addPart.mutate()} disabled={addPart.isPending || !form.name || !form.sell_price}>
-            {addPart.isPending?'جاري...':'حفظ'}</button></>}>
+      <Modal open={showAddPart} onClose={() => { setShowAddPart(false); setSimilarParts([]); setDuplicatePart(null) }} title="إضافة صنف جديد"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => { setShowAddPart(false); setSimilarParts([]); setDuplicatePart(null) }}>إلغاء</button>
+          {similarParts.length > 0
+            ? <button className="btn btn-primary" onClick={() => { setSimilarParts([]); addPart.mutate(true) }}>
+                إضافة على أي حال
+              </button>
+            : <button className="btn btn-primary" onClick={() => addPart.mutate(false)}
+                disabled={addPart.isPending || !form.name || !form.sell_price}>
+                {addPart.isPending ? 'جاري...' : 'حفظ'}
+              </button>
+          }
+        </>}>
         <div className="form-grid">
+          {/* تحذير: تطابق كامل */}
+          {duplicatePart && (
+            <div className="form-group form-full">
+              <div style={{ padding:'10px 14px', background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.3)', borderRadius:8 }}>
+                <div style={{ fontWeight:600, color:'var(--red)', fontSize:12, marginBottom:4 }}>⛔ الصنف موجود مسبقاً</div>
+                <div style={{ fontSize:12, color:'var(--text)' }}>"{duplicatePart.name}" — الكمية الحالية: {duplicatePart.quantity}</div>
+                <div style={{ fontSize:11, color:'var(--muted)', marginTop:4 }}>استخدم زر ▲ (إضافة كمية) على الصنف الموجود.</div>
+              </div>
+            </div>
+          )}
+          {/* تحذير: أصناف مشابهة */}
+          {similarParts.length > 0 && (
+            <div className="form-group form-full">
+              <div style={{ padding:'10px 14px', background:'rgba(245,158,11,.08)', border:'1px solid rgba(245,158,11,.3)', borderRadius:8 }}>
+                <div style={{ fontWeight:600, color:'var(--amber)', fontSize:12, marginBottom:8 }}>⚠️ هل تقصد أحد هذه الأصناف؟</div>
+                {similarParts.map(s => (
+                  <div key={s.id} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:12, borderBottom:'1px solid var(--border)' }}>
+                    <span style={{ color:'var(--text-2)' }}>{s.name}</span>
+                    <span style={{ color:'var(--green)', fontFamily:'monospace' }}>كمية: {s.quantity}</span>
+                  </div>
+                ))}
+                <div style={{ fontSize:11, color:'var(--muted)', marginTop:6 }}>إذا لم تجد ما تبحث عنه اضغط "إضافة على أي حال".</div>
+              </div>
+            </div>
+          )}
           {/* الاسم */}
           <div className="form-group form-full">
             <label className="form-label">اسم الصنف *</label>
@@ -583,11 +700,18 @@ function PartDetailModal({ partId, onClose }) {
                         {canSeeCost && <span style={{ fontFamily:'monospace', fontSize:11, color:'var(--muted)', textAlign:'right' }}>
                           {m.unit_cost ? `${Number(m.unit_cost).toLocaleString('ar-SA')}ر` : '—'}
                         </span>}
-                        <span style={{ color:'var(--text)', display:'flex', gap:6, flexWrap:'wrap' }}>
+                        <span style={{ color:'var(--text)', display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
                           {m.performed_by_name && <strong>{m.performed_by_name}</strong>}
-                          {m.order_number && <span style={{ color:'var(--blue)', fontFamily:'monospace', fontSize:11 }}>{m.order_number}</span>}
-                          {m.supplier_name && <span style={{ color:'var(--amber)', fontSize:11 }}>{m.supplier_name}</span>}
-                          {m.notes && <span style={{ color:'var(--muted)', fontSize:11 }}>— {m.notes}</span>}
+                          {m.order_number && <span style={{ color:'var(--blue)', fontFamily:'monospace', fontSize:11 }}>#{m.order_number}</span>}
+                          {m.customer_name && <span style={{ color:'var(--text-2)', fontSize:11 }}>← {m.customer_name}</span>}
+                          {(m.device_brand || m.device_model) && (
+                            <span style={{ color:'var(--muted)', fontSize:11 }}>
+                              ({m.device_brand} {m.device_model})
+                            </span>
+                          )}
+                          {m.technician_name && <span style={{ color:'var(--amber)', fontSize:11 }}>🔧 {m.technician_name}</span>}
+                          {m.supplier_name && <span style={{ color:'var(--amber)', fontSize:11 }}>📦 {m.supplier_name}</span>}
+                          {m.notes && !m.order_number && <span style={{ color:'var(--muted)', fontSize:11 }}>— {m.notes}</span>}
                         </span>
                       </div>
                     )
@@ -1000,6 +1124,337 @@ function MovementsTab() {
     </div>
   )
 }
+
+
+// ── Defective Parts Page ──────────────────────────────────
+export function DefectivePage() {
+  const qc = useQueryClient()
+  const { user } = useAuth()
+  const canManage = ['admin','branch_manager','warehouse'].includes(user?.role)
+  const canApprove = ['admin','branch_manager'].includes(user?.role)
+
+  const [activeTab, setActiveTab]   = useState('defective') // 'defective' | 'returns'
+  const [statusFilter, setStatusFilter] = useState('waiting')
+  const [showAddDefective, setShowAddDefective] = useState(false)
+  const [showCreateReturn, setShowCreateReturn] = useState(false)
+  const [showResolve, setShowResolve]   = useState(null) // return object
+  const [selectedIds, setSelectedIds]   = useState([])
+  const [addForm, setAddForm]       = useState({ part_id:'', quantity:1, source_type:'stock', reason:'' })
+  const [returnNotes, setReturnNotes]   = useState('')
+  const [resolveItems, setResolveItems] = useState([])
+
+  const { data: defData, isLoading: defLoading } = useQuery({
+    queryKey: ['defective', statusFilter],
+    queryFn: () => api.get(`/defective?status=${statusFilter}`)
+  })
+  const defParts = defData?.data || []
+
+  const { data: retData, isLoading: retLoading } = useQuery({
+    queryKey: ['supplier-returns'],
+    queryFn: () => api.get('/defective/returns'),
+    enabled: activeTab === 'returns'
+  })
+  const returns = retData?.data || []
+
+  const { data: partsData } = useQuery({
+    queryKey: ['parts-for-defective'],
+    queryFn: () => api.get('/inventory/parts?limit=200'),
+    enabled: showAddDefective
+  })
+  const partsList = partsData?.data || []
+
+  const addMutation = useMutation({
+    mutationFn: () => api.post('/defective', addForm),
+    onSuccess: () => { toast.success('تم إضافة القطعة لمنطقة التوالف ✅'); qc.invalidateQueries(['defective']); setShowAddDefective(false); setAddForm({ part_id:'', quantity:1, source_type:'stock', reason:'' }) },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+
+  const writeoffMutation = useMutation({
+    mutationFn: (id) => api.post(`/defective/${id}/writeoff`, { reason: 'شطب بموافقة المدير' }),
+    onSuccess: () => { toast.success('تم شطب القطعة ✅'); qc.invalidateQueries(['defective']) },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+
+  const createReturnMutation = useMutation({
+    mutationFn: () => {
+      const supplierId = defParts.find(d => selectedIds.includes(d.id))?.supplier_id
+      if (!supplierId) throw new Error('لا يوجد مورد مرتبط بهذه القطع')
+      return api.post('/defective/returns', { supplier_id: supplierId, defective_ids: selectedIds, notes: returnNotes })
+    },
+    onSuccess: (res) => { toast.success(`✅ ${res.data.message}`); qc.invalidateQueries(['defective']); qc.invalidateQueries(['supplier-returns']); setShowCreateReturn(false); setSelectedIds([]); setReturnNotes('') },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+
+  const resolveMutation = useMutation({
+    mutationFn: () => api.post(`/defective/returns/${showResolve.id}/resolve`, { items: resolveItems }),
+    onSuccess: () => { toast.success('تم تسجيل رد المورد ✅'); qc.invalidateQueries(['defective']); qc.invalidateQueries(['supplier-returns']); setShowResolve(null) },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+
+  const openResolve = async (ret) => {
+    const res = await api.get(`/defective/returns/${ret.id}`)
+    const items = res.data.data.items.map(i => ({ item_id: i.id, part_name: i.part_name, quantity_sent: i.quantity_sent, quantity_replaced:0, quantity_rejected:0, notes:'' }))
+    setResolveItems(items)
+    setShowResolve(res.data.data)
+  }
+
+  const STATUS_LABELS = { waiting:'انتظار', sent_to_supplier:'مع المورد', returned:'تم الاستبدال', written_off:'مشطوبة' }
+  const STATUS_COLORS = { waiting:'var(--amber)', sent_to_supplier:'var(--blue)', returned:'var(--green)', written_off:'var(--muted)' }
+
+  return (
+    <div className="page fade-in">
+      <div className="page-header">
+        <div>
+          <div className="page-title">القطع التالفة وإرجاعات الموردين</div>
+          <div className="page-sub">{defParts.length} قطعة في المنطقة الحالية</div>
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          {canManage && activeTab==='defective' && selectedIds.length > 0 && (
+            <button className="btn btn-primary" onClick={() => setShowCreateReturn(true)}>
+              📤 أرسل للمورد ({selectedIds.length})
+            </button>
+          )}
+          {canManage && (
+            <button className="btn btn-ghost" onClick={() => setShowAddDefective(true)}>
+              + إضافة قطعة تالفة
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* التبويبات */}
+      <div style={{ display:'flex', gap:4, background:'var(--ink-3)', borderRadius:8, padding:3, alignSelf:'flex-start', marginBottom:16, width:'fit-content' }}>
+        {[{k:'defective',l:'القطع التالفة'},{k:'returns',l:'إرجاعات الموردين'}].map(t => (
+          <button key={t.k} onClick={() => setActiveTab(t.k)}
+            style={{ padding:'5px 14px', borderRadius:6, border:'none', cursor:'pointer',
+              fontFamily:'var(--font)', fontSize:12, fontWeight:500,
+              background: activeTab===t.k ? 'var(--blue)' : 'transparent',
+              color: activeTab===t.k ? '#fff' : 'var(--muted)' }}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      {/* تبويب القطع التالفة */}
+      {activeTab === 'defective' && (
+        <>
+          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+            {['waiting','sent_to_supplier','returned','written_off'].map(s => (
+              <button key={s} onClick={() => setStatusFilter(s)}
+                className={`btn btn-sm ${statusFilter===s?'btn-primary':'btn-ghost'}`}>
+                {STATUS_LABELS[s]}
+              </button>
+            ))}
+          </div>
+
+          <div className="card" style={{ padding:0, overflow:'hidden' }}>
+            {defLoading ? <Loading /> : !defParts.length ? <EmptyState message="لا توجد قطع تالفة" /> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    {canManage && statusFilter==='waiting' && <th style={{width:32}}></th>}
+                    <th>القطعة</th><th>المورد</th><th>الكمية</th>
+                    <th>المصدر</th><th>السبب</th><th>الحالة</th>
+                    {canApprove && statusFilter==='waiting' && <th>إجراء</th>}
+                  </tr></thead>
+                  <tbody>
+                    {defParts.map(d => (
+                      <tr key={d.id}>
+                        {canManage && statusFilter==='waiting' && (
+                          <td>
+                            <input type="checkbox" checked={selectedIds.includes(d.id)}
+                              onChange={e => setSelectedIds(prev => e.target.checked ? [...prev,d.id] : prev.filter(x=>x!==d.id))}
+                              disabled={!d.supplier_id}/>
+                          </td>
+                        )}
+                        <td style={{ fontWeight:500, color:'var(--text-2)' }}>
+                          {d.part_name}
+                          {d.sku && <div className="font-mono text-xs text-muted">{d.sku}</div>}
+                        </td>
+                        <td style={{ fontSize:12 }}>{d.supplier_name || <span style={{color:'var(--red)',fontSize:11}}>بدون مورد</span>}</td>
+                        <td className="font-mono text-sm text-center">{d.quantity}</td>
+                        <td style={{ fontSize:11, color:'var(--muted)' }}>
+                          {d.source_type==='warranty_ticket' ? `ضمان: ${d.ticket_number||'—'}` :
+                           d.source_type==='stock' ? 'من المخزون' : 'عند الاستلام'}
+                        </td>
+                        <td style={{ fontSize:12, maxWidth:150, color:'var(--text)' }}>{d.reason || '—'}</td>
+                        <td>
+                          <span style={{ padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:600,
+                            background:`${STATUS_COLORS[d.status]}18`, color:STATUS_COLORS[d.status] }}>
+                            {STATUS_LABELS[d.status]}
+                          </span>
+                        </td>
+                        {canApprove && statusFilter==='waiting' && (
+                          <td>
+                            <button className="btn btn-sm" style={{ background:'rgba(239,68,68,.1)', color:'var(--red)', border:'1px solid rgba(239,68,68,.2)', fontSize:11 }}
+                              onClick={() => { if(confirm('شطب هذه القطعة نهائياً؟')) writeoffMutation.mutate(d.id) }}>
+                              شطب
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* تبويب الإرجاعات */}
+      {activeTab === 'returns' && (
+        <div className="card" style={{ padding:0, overflow:'hidden' }}>
+          {retLoading ? <Loading /> : !returns.length ? <EmptyState message="لا توجد طلبات إرجاع" /> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>رقم الطلب</th><th>المورد</th><th>القطع</th>
+                  <th>التاريخ</th><th>الحالة</th><th>إجراء</th>
+                </tr></thead>
+                <tbody>
+                  {returns.map(r => (
+                    <tr key={r.id}>
+                      <td className="font-mono text-blue">{r.return_number}</td>
+                      <td style={{ fontWeight:500 }}>{r.supplier_name}</td>
+                      <td className="text-center font-mono">{r.items_count}</td>
+                      <td className="font-mono text-xs text-muted">{new Date(r.created_at).toLocaleDateString('ar-SA')}</td>
+                      <td>
+                        <span style={{ padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:600,
+                          background: r.status==='resolved' ? 'rgba(16,185,129,.1)' : 'rgba(59,130,246,.1)',
+                          color: r.status==='resolved' ? 'var(--green)' : 'var(--blue)' }}>
+                          {r.status==='draft'?'مسودة':r.status==='sent'?'مع المورد':'تم الحل'}
+                        </span>
+                      </td>
+                      <td>
+                        {r.status === 'sent' && canManage && (
+                          <button className="btn btn-sm btn-primary" style={{ fontSize:11 }}
+                            onClick={() => openResolve(r)}>
+                            📥 سجّل رد المورد
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* نافذة إضافة قطعة تالفة */}
+      <Modal open={showAddDefective} onClose={() => setShowAddDefective(false)} title="إضافة قطعة لمنطقة التوالف"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setShowAddDefective(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={() => addMutation.mutate()} disabled={addMutation.isPending||!addForm.part_id}>
+            {addMutation.isPending?'جاري...':'إضافة'}
+          </button>
+        </>}>
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          <div className="form-group">
+            <label className="form-label">القطعة *</label>
+            <select className="form-select" value={addForm.part_id} onChange={e => setAddForm(f=>({...f,part_id:e.target.value}))}>
+              <option value="">— اختر القطعة —</option>
+              {partsList.map(p => <option key={p.id} value={p.id}>{p.name} (متوفر: {p.quantity})</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">المصدر</label>
+            <select className="form-select" value={addForm.source_type} onChange={e => setAddForm(f=>({...f,source_type:e.target.value}))}>
+              <option value="stock">من المخزون (اكتُشفت تالفة)</option>
+              <option value="warranty_ticket">من تذكرة ضمان</option>
+              <option value="receiving">عند الاستلام من المورد</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">الكمية</label>
+            <input className="form-input" type="number" min="1" value={addForm.quantity} onChange={e=>setAddForm(f=>({...f,quantity:parseInt(e.target.value)||1}))}/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">سبب التلف</label>
+            <input className="form-input" value={addForm.reason} onChange={e=>setAddForm(f=>({...f,reason:e.target.value}))} placeholder="مثال: شاشة معيبة من المصنع..."/>
+          </div>
+        </div>
+      </Modal>
+
+      {/* نافذة إرسال للمورد */}
+      <Modal open={showCreateReturn} onClose={() => setShowCreateReturn(false)} title="إرسال قطع للمورد"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setShowCreateReturn(false)}>إلغاء</button>
+          <button className="btn btn-primary" onClick={() => createReturnMutation.mutate()} disabled={createReturnMutation.isPending}>
+            {createReturnMutation.isPending?'جاري...':'📤 إرسال للمورد'}
+          </button>
+        </>}>
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:13, color:'var(--text-2)', marginBottom:8 }}>القطع المحددة للإرسال:</div>
+          {selectedIds.map(id => {
+            const d = defParts.find(x=>x.id===id)
+            return d ? (
+              <div key={id} style={{ padding:'6px 10px', background:'var(--ink-3)', borderRadius:6, marginBottom:4, fontSize:12 }}>
+                {d.part_name} × {d.quantity} — المورد: {d.supplier_name||'غير محدد'}
+              </div>
+            ) : null
+          })}
+        </div>
+        <div className="form-group">
+          <label className="form-label">ملاحظات للمورد</label>
+          <input className="form-input" value={returnNotes} onChange={e=>setReturnNotes(e.target.value)} placeholder="تفاصيل للمورد..."/>
+        </div>
+      </Modal>
+
+      {/* نافذة تسجيل رد المورد */}
+      {showResolve && (
+        <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,.7)',
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e => e.target===e.currentTarget && setShowResolve(null)}>
+          <div style={{ background:'var(--ink-2)', borderRadius:12, padding:24, maxWidth:560, width:'100%',
+            border:'1px solid var(--border)', maxHeight:'90vh', overflowY:'auto' }}>
+            <div style={{ fontWeight:700, fontSize:15, color:'var(--text-2)', marginBottom:16 }}>
+              📥 تسجيل رد المورد — {showResolve.return_number}
+            </div>
+            <div style={{ fontSize:12, color:'var(--muted)', marginBottom:16 }}>
+              المورد: <strong>{showResolve.supplier_name}</strong>
+            </div>
+
+            {resolveItems.map((item, i) => (
+              <div key={item.item_id} style={{ padding:'12px 14px', background:'var(--ink-3)', borderRadius:8, marginBottom:8 }}>
+                <div style={{ fontWeight:600, color:'var(--text-2)', marginBottom:10, fontSize:13 }}>
+                  📦 {item.part_name} — أُرسل: {item.quantity_sent}
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                  <div className="form-group">
+                    <label className="form-label" style={{ color:'var(--green)' }}>استبدل (سليمة)</label>
+                    <input className="form-input" type="number" min="0" max={item.quantity_sent}
+                      value={item.quantity_replaced}
+                      onChange={e => setResolveItems(prev => prev.map((x,j) => j===i ? {...x, quantity_replaced: parseInt(e.target.value)||0} : x))}/>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label" style={{ color:'var(--red)' }}>رفض (تالفة)</label>
+                    <input className="form-input" type="number" min="0" max={item.quantity_sent}
+                      value={item.quantity_rejected}
+                      onChange={e => setResolveItems(prev => prev.map((x,j) => j===i ? {...x, quantity_rejected: parseInt(e.target.value)||0} : x))}/>
+                  </div>
+                </div>
+                {item.quantity_replaced + item.quantity_rejected > item.quantity_sent && (
+                  <div style={{ fontSize:11, color:'var(--red)', marginTop:4 }}>⚠️ الإجمالي أكبر من الكمية المرسلة</div>
+                )}
+              </div>
+            ))}
+
+            <div style={{ display:'flex', gap:8, marginTop:16 }}>
+              <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => setShowResolve(null)}>إلغاء</button>
+              <button className="btn btn-primary" style={{ flex:1 }} onClick={() => resolveMutation.mutate()} disabled={resolveMutation.isPending}>
+                {resolveMutation.isPending ? 'جاري...' : '✅ تأكيد رد المورد'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 // ── Suppliers Page ────────────────────────────────────────
 export function SuppliersPage() {

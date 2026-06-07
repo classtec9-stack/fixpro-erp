@@ -156,7 +156,7 @@ export default function DeliveryReceipt({ ticket: t, onConfirm, onClose }) {
     <div class="section">
       <div class="section-title">تفاصيل الصيانة</div>
       <div class="row"><span class="lbl">المشكلة المُبلَّغة:</span><span class="val">${t.problem_desc || '—'}</span></div>
-      ${t.diagnosis_notes ? `<div class="row"><span class="lbl">ملاحظات الفني:</span><span class="val">${t.diagnosis_notes}</span></div>` : ''}
+
       <div class="row"><span class="lbl">تاريخ الاستلام:</span><span class="val">${new Date(t.received_at || Date.now()).toLocaleDateString('ar-SA')}</span></div>
       <div class="row"><span class="lbl">تاريخ التسليم:</span><span class="val">${dateStr}</span></div>
     </div>

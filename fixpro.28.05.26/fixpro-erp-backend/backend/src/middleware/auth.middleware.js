@@ -20,11 +20,12 @@ const authenticate = async (req, res, next) => {
 
     req.user = rows[0];
 
-    // Admin: إذا اختار فرعاً محدداً من الـ header
+    // تطبيق X-Branch-ID: إذا المدير اختار فرعاً محدداً
     const xBranch = req.headers['x-branch-id'];
-    if (xBranch && rows[0].role === 'admin') {
+    if (xBranch && xBranch !== 'all' && rows[0].role === 'admin') {
       req.user = { ...rows[0], branch_id: xBranch };
     }
+    // إذا أرسل 'all' → استخدم branch_id الأصلي من قاعدة البيانات (لا تعديل)
 
     next();
   } catch (err) {

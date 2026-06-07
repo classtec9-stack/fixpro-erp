@@ -17,7 +17,7 @@ router.get('/technicians', authorize('admin','branch_manager','accountant'), asy
   } catch(e) { next(e); }
 });
 
-router.get('/daily', async (req, res, next) => {
+router.get('/daily', authorize('admin','branch_manager','accountant'), async (req, res, next) => {
   try {
     const { getDailyReport } = require('../controllers/dashboard.controller');
     return getDailyReport(req, res, next);

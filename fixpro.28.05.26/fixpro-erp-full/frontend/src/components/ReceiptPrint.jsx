@@ -85,7 +85,6 @@ export default function ReceiptPrint({ ticket: t, onClose }) {
       ${t.physical_condition ? `<div class="row"><span class="lbl">حالة الجهاز:</span><span class="val">${t.physical_condition}</span></div>` : ''}
       ${t.accessories ? `<div class="row"><span class="lbl">الملحقات:</span><span class="val">${t.accessories}</span></div>` : ''}
       <hr class="hr"/>
-      <div class="row"><span class="lbl">الفني:</span><span class="val">${t.technician_name||'سيتم التحديد'}</span></div>
       <div class="row"><span class="lbl">التكلفة التقديرية:</span><span class="val">${t.estimated_cost ? t.estimated_cost+' ريال' : 'سيتم التقدير'}</span></div>
       <div class="row"><span class="lbl">ضمان الإصلاح:</span><span class="val">${t.warranty_days||30} يوم</span></div>
       <hr class="hr2"/>

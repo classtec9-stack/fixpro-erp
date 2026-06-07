@@ -282,6 +282,31 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
   const [statusNote, setStatusNote]     = useState('')
   const [showConvert, setShowConvert]   = useState(false)
   const [rejectReason, setRejectReason] = useState('')
+  const [showWarranty, setShowWarranty] = useState(false)
+  const [warrantyForm, setWarrantyForm] = useState({
+    claim_type:'same_defect', notes:'', is_free:true,
+    technician_fault:false, supplier_defect:false,
+    same_technician:true, new_technician_id:''
+  })
+  const setWF = (k,v) => setWarrantyForm(f => ({...f,[k]:v}))
+
+  const { data: techsData } = useQuery({
+    queryKey: ['techs-warranty'],
+    queryFn: () => api.get('/technicians'),
+    enabled: showWarranty
+  })
+  const techsList = techsData?.data || []
+
+  const createWarranty = useMutation({
+    mutationFn: () => api.post('/warranty', { original_order_id: ticketId, ...warrantyForm }),
+    onSuccess: (res) => {
+      toast.success(`✅ ${res.data.message}`)
+      setShowWarranty(false)
+      qc.invalidateQueries(['ticket', ticketId])
+      qc.invalidateQueries(['tickets'])
+    },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
   const [showReject, setShowReject]     = useState(false)
 
   if (isLoading) return <Modal open={true} onClose={onClose} title="تحميل..."><Loading /></Modal>
@@ -334,6 +359,12 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
               ticket={t}
               onSuccess={() => { onClose(); }}
             />
+          )}
+          {t.status === 'delivered' && (
+            <button className="btn btn-sm" style={{ background:'rgba(139,92,246,.1)', color:'#8B5CF6', border:'1px solid rgba(139,92,246,.3)' }}
+              onClick={() => setShowWarranty(true)}>
+              🛡️ طلب ضمان
+            </button>
           )}
           <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
         </div>
@@ -440,6 +471,126 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
               تأكيد الرفض
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowReject(false)}>إلغاء</button>
+          </div>
+        </div>
+      )}
+      {/* نافذة طلب الضمان */}
+      {showWarranty && (
+        <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,.7)',
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e => e.target===e.currentTarget && setShowWarranty(false)}>
+          <div style={{ background:'var(--ink-2)', borderRadius:12, padding:24, maxWidth:480, width:'100%',
+            border:'1px solid var(--border)', boxShadow:'0 24px 64px rgba(0,0,0,.5)', maxHeight:'90vh', overflowY:'auto' }}>
+
+            <div style={{ fontWeight:700, fontSize:15, color:'var(--text-2)', marginBottom:4 }}>🛡️ طلب ضمان</div>
+            <div style={{ fontSize:12, color:'var(--muted)', marginBottom:16 }}>
+              <span style={{ color:'var(--blue)', fontFamily:'monospace' }}>{t.order_number}</span>
+              {' — '}{t.customer_name} — {t.brand} {t.model}
+            </div>
+
+            {/* الفني السابق */}
+            <div style={{ padding:'10px 14px', background:'var(--ink-3)', borderRadius:8, marginBottom:16 }}>
+              <div style={{ fontSize:11, color:'var(--muted)', marginBottom:4 }}>الفني الذي أصلح الجهاز سابقاً</div>
+              <div style={{ fontWeight:600, color:'var(--text-2)', fontSize:13 }}>
+                🔧 {t.technician_name || 'لم يُعيَّن فني'}
+              </div>
+            </div>
+
+            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+
+              {/* نوع الضمان: مجاني أم مدفوع */}
+              <div>
+                <div style={{ fontSize:12, fontWeight:600, color:'var(--text-2)', marginBottom:8 }}>نوع الإصلاح</div>
+                <div style={{ display:'flex', gap:8 }}>
+                  {[{v:true,label:'🆓 مجاني (ضمان)',color:'var(--green)'},{v:false,label:'💰 مدفوع (تذكرة جديدة)',color:'var(--amber)'}].map(opt => (
+                    <button key={String(opt.v)} onClick={() => setWF('is_free', opt.v)}
+                      style={{ flex:1, padding:'8px', borderRadius:8, border:`2px solid ${warrantyForm.is_free===opt.v ? opt.color : 'var(--border)'}`,
+                        background: warrantyForm.is_free===opt.v ? `${opt.color}18` : 'transparent',
+                        color: warrantyForm.is_free===opt.v ? opt.color : 'var(--muted)',
+                        fontWeight:600, fontSize:12, cursor:'pointer' }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize:11, color:'var(--muted)', marginTop:6 }}>
+                  {warrantyForm.is_free
+                    ? '✅ ستُعاد نفس التذكرة الأصلية وتتغير حالتها إلى "تم الاستلام"'
+                    : '📋 ستُفتح تذكرة جديدة منفصلة للعميل'}
+                </div>
+              </div>
+
+              {/* نوع المطالبة */}
+              <div className="form-group">
+                <label className="form-label">سبب العودة</label>
+                <select className="form-select" value={warrantyForm.claim_type} onChange={e => setWF('claim_type', e.target.value)}>
+                  <option value="same_defect">نفس المشكلة عادت مرة أخرى</option>
+                  <option value="part_replacement">القطعة معيبة — تحتاج استبدال</option>
+                  <option value="technician_fault">خطأ في التركيب من الفني</option>
+                  <option value="new_issue">عطل جديد (غير مشمول بالضمان)</option>
+                </select>
+              </div>
+
+              {/* تعيين الفني */}
+              <div>
+                <div style={{ fontSize:12, fontWeight:600, color:'var(--text-2)', marginBottom:8 }}>تعيين الفني</div>
+                <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+                  {[{v:true,label:`نفس الفني (${t.technician_name||'غير محدد'})`},{v:false,label:'فني آخر'}].map(opt => (
+                    <button key={String(opt.v)} onClick={() => setWF('same_technician', opt.v)}
+                      style={{ flex:1, padding:'7px', borderRadius:8,
+                        border:`2px solid ${warrantyForm.same_technician===opt.v ? 'var(--blue)' : 'var(--border)'}`,
+                        background: warrantyForm.same_technician===opt.v ? 'rgba(59,130,246,.1)' : 'transparent',
+                        color: warrantyForm.same_technician===opt.v ? 'var(--blue)' : 'var(--muted)',
+                        fontSize:12, cursor:'pointer' }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {!warrantyForm.same_technician && (
+                  <select className="form-select" value={warrantyForm.new_technician_id}
+                    onChange={e => setWF('new_technician_id', e.target.value)}>
+                    <option value="">— اختر فني —</option>
+                    {techsList.map(tech => (
+                      <option key={tech.id} value={tech.id}>{tech.full_name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* ملاحظات */}
+              <div className="form-group">
+                <label className="form-label">وصف المشكلة التي عاد بها العميل</label>
+                <input className="form-input" value={warrantyForm.notes}
+                  onChange={e => setWF('notes', e.target.value)}
+                  placeholder="مثال: الشاشة بدأت تظهر خطوط بعد أسبوع..."/>
+              </div>
+
+              {/* خيارات إضافية */}
+              <div style={{ display:'flex', gap:16 }}>
+                <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, cursor:'pointer' }}>
+                  <input type="checkbox" checked={warrantyForm.technician_fault}
+                    onChange={e => setWF('technician_fault', e.target.checked)}/>
+                  خطأ من الفني
+                </label>
+                <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, cursor:'pointer' }}>
+                  <input type="checkbox" checked={warrantyForm.supplier_defect}
+                    onChange={e => setWF('supplier_defect', e.target.checked)}/>
+                  عيب من المورد
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display:'flex', gap:8, marginTop:20 }}>
+              <button className="btn btn-ghost" style={{ flex:1 }} onClick={() => setShowWarranty(false)}>إلغاء</button>
+              <button style={{ flex:2, padding:'10px', borderRadius:8, border:'none', cursor:'pointer',
+                background: warrantyForm.is_free ? 'var(--green)' : '#F59E0B',
+                color:'#fff', fontWeight:700, fontSize:13,
+                opacity: createWarranty.isPending ? .7 : 1 }}
+                onClick={() => createWarranty.mutate()}
+                disabled={createWarranty.isPending}>
+                {createWarranty.isPending ? 'جاري...' :
+                  warrantyForm.is_free ? '🔄 إعادة فتح التذكرة (مجاناً)' : '📋 فتح تذكرة جديدة (مدفوع)'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -633,14 +784,23 @@ function NewTicketModal({ onClose, onSuccess }) {
     }
   })
 
+  const [nameConflict, setNameConflict] = useState(null) // D3
+
   const submit = useMutation({
     mutationFn: () => api.post('/tickets', {
       ...form,
       ticket_type: ticketType,
       customer_id: customerFound?.id
     }),
-    onSuccess: (d) => onSuccess(d?.data),
-    onError: err => toast.error(err?.message || 'خطأ في الإنشاء')
+    onSuccess: (d) => { setNameConflict(null); onSuccess(d?.data) },
+    onError: err => {
+      const data = err?.response?.data
+      if (data?.code === 'CUSTOMER_NAME_CONFLICT') {
+        setNameConflict(data.data)
+        return
+      }
+      toast.error(data?.message || 'خطأ في الإنشاء')
+    }
   })
 
   // ─── تذكرة فحص سريع — محذوفة، لكن نبقي الكود للتذاكر القديمة ──────
@@ -719,6 +879,39 @@ function NewTicketModal({ onClose, onSuccess }) {
   const canNext = form.customer_phone && form.customer_name && form.device_brand && form.device_model && form.device_model !== ''
   const canSave = form.problem_desc
 
+  const [checkingPhone, setCheckingPhone] = useState(false)
+
+  // التحقق من تعارض الاسم قبل الانتقال للخطوة الثانية — دائماً من API
+  const handleNext = async () => {
+    if (!canNext) return
+    setCheckingPhone(true)
+    try {
+      const res = await api.get(`/customers?search=${form.customer_phone}&limit=1`)
+      const found = res?.data?.[0]
+
+      if (found) {
+        setCustomerFound(found)
+        // إذا الاسم مختلف — أوقف وأظهر التحذير
+        if (found.full_name.trim() !== form.customer_name.trim()) {
+          setNameConflict({
+            existing_id: found.id,
+            existing_name: found.full_name,
+            new_name: form.customer_name
+          })
+          return
+        }
+        // نفس الاسم — استخدم العميل الموجود
+        set('customer_name', found.full_name)
+      }
+      setStep(2)
+    } catch {
+      // إذا فشل الطلب نكمل
+      setStep(2)
+    } finally {
+      setCheckingPhone(false)
+    }
+  }
+
   return (
     <Modal open={true} onClose={onClose} title="🔧 تذكرة صيانة جديدة" maxWidth={600}
       footer={
@@ -729,7 +922,10 @@ function NewTicketModal({ onClose, onSuccess }) {
           }
           <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
           {step < 2
-            ? <button className="btn btn-primary" onClick={() => setStep(2)} disabled={!canNext}>التالي →</button>
+            ? <button className="btn btn-primary" onClick={handleNext}
+                disabled={!canNext || checkingPhone}>
+                {checkingPhone ? '...' : 'التالي →'}
+              </button>
             : <button className="btn btn-primary" onClick={() => submit.mutate()} disabled={submit.isPending || !canSave}>
                 {submit.isPending ? 'جاري الحفظ...' : '✓ إنشاء التذكرة'}
               </button>
@@ -855,6 +1051,61 @@ function NewTicketModal({ onClose, onSuccess }) {
           </div>
         </div>
       )}
+
+      {/* D3: نافذة تعارض اسم العميل */}
+      {nameConflict && (
+        <div style={{
+          position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,.7)',
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16
+        }}>
+          <div style={{
+            background:'var(--ink-2)', borderRadius:12, padding:24, maxWidth:420, width:'100%',
+            border:'1px solid var(--border)', boxShadow:'0 24px 64px rgba(0,0,0,.5)'
+          }}>
+            <div style={{ fontWeight:700, fontSize:15, color:'var(--text-2)', marginBottom:16 }}>
+              ⚠️ تعارض في بيانات العميل
+            </div>
+            <div style={{ fontSize:13, color:'var(--text)', marginBottom:8 }}>
+              هذا الرقم مسجل في النظام باسم:
+            </div>
+            <div style={{ fontWeight:700, color:'var(--blue)', fontSize:15, marginBottom:12 }}>
+              {nameConflict.existing_name}
+            </div>
+            <div style={{ fontSize:13, color:'var(--text)', marginBottom:8 }}>
+              الاسم الذي أدخلته:
+            </div>
+            <div style={{ fontWeight:700, color:'var(--amber)', fontSize:15, marginBottom:20 }}>
+              {nameConflict.new_name}
+            </div>
+            <div style={{ fontSize:12, color:'var(--muted)', marginBottom:20 }}>
+              هل تريد تحديث اسم العميل إلى الاسم الجديد؟
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button className="btn btn-ghost" style={{ flex:1 }}
+                onClick={() => {
+                  // استخدم الاسم الحالي وانتقل للخطوة الثانية
+                  setForm(f => ({ ...f, customer_name: nameConflict.existing_name }))
+                  setNameConflict(null)
+                  setStep(2)
+                }}>
+                لا — استخدم الاسم الحالي
+              </button>
+              <button className="btn btn-primary" style={{ flex:1 }}
+                onClick={async () => {
+                  // حدّث الاسم ثم انتقل للخطوة الثانية
+                  try {
+                    await api.put(`/customers/${nameConflict.existing_id}`, { full_name: nameConflict.new_name })
+                    setCustomerFound(prev => prev ? { ...prev, full_name: nameConflict.new_name } : prev)
+                    setNameConflict(null)
+                    setStep(2)
+                  } catch { toast.error('خطأ في تحديث الاسم') }
+                }}>
+                نعم — حدّث الاسم
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   )
 }
@@ -864,7 +1115,34 @@ function TicketEditPanel({ ticket, onUpdate }) {
   const qc = useQueryClient()
   const { user } = useAuth()
   const canManageParts = ['admin','branch_manager','warehouse'].includes(user?.role)
-  const [tab, setTab] = useState(null)  // null | 'edit' | 'parts'
+
+  // إرسال قطعة للتوالف من التذكرة
+  const [defectiveTarget, setDefectiveTarget] = useState(null) // القطعة المراد إرسالها
+  const [defectiveReason, setDefectiveReason] = useState('')
+
+  const sendToDefective = useMutation({
+    mutationFn: () => api.post('/defective', {
+      part_id:     defectiveTarget.part_id,
+      quantity:    defectiveTarget.quantity,
+      source_type: 'warranty_ticket',
+      source_id:   ticket.id,
+      reason:      defectiveReason || `قطعة مفكوكة من تذكرة ${ticket.order_number}`
+    }),
+    onSuccess: () => {
+      toast.success('✅ تم نقل القطعة لمنطقة التوالف')
+      setDefectiveTarget(null)
+      setDefectiveReason('')
+    },
+    onError: e => toast.error(e?.response?.data?.message || 'خطأ')
+  })
+  const [tab, setTab] = useState(null)  // null | 'edit' | 'parts' | 'lifecycle'
+
+  // جلب سجل الحركات لكل قطعة في هذه التذكرة
+  const { data: lifecycleData } = useQuery({
+    queryKey: ['ticket-lifecycle', ticket.id],
+    queryFn: () => api.get(`/tickets/${ticket.id}/parts`),
+    enabled: tab === 'lifecycle'
+  })
   const [problem, setProblem] = useState(ticket.problem_desc || '')
   const [deviceType, setDeviceType] = useState(ticket.device_type || 'smartphone')
   const [editBrand, setEditBrand] = useState(ticket.brand !== 'غير محدد' ? ticket.brand : '')
@@ -936,6 +1214,10 @@ function TicketEditPanel({ ticket, onUpdate }) {
           onClick={() => setTab(tab==='parts'?null:'parts')}>
           📦 القطع المستخدمة ({ticketParts.length})
         </button>
+        <button className={`btn btn-sm ${tab==='lifecycle'?'btn-primary':'btn-ghost'}`}
+          onClick={() => setTab(tab==='lifecycle'?null:'lifecycle')}>
+          🔍 دورة حياة القطع
+        </button>
       </div>
 
       {/* تبويب التعديل */}
@@ -984,6 +1266,12 @@ function TicketEditPanel({ ticket, onUpdate }) {
                     <span className="font-mono text-blue" style={{ fontSize:12 }}>
                       {(Number(p.unit_price)*Number(p.quantity)).toLocaleString()} ر
                     </span>
+                    {canManageParts && (
+                      <button className="btn-icon" onClick={() => setDefectiveTarget(p)}
+                        title="نقل للتوالف" style={{ color:'var(--amber)' }}>
+                        <AlertTriangle size={13}/>
+                      </button>
+                    )}
                     <button className="btn-icon" onClick={() => removePart.mutate(p.id)}
                       title="حذف وإرجاع للمخزون" style={{ color:'var(--red)', display: canManageParts ? 'flex' : 'none' }}>
                       <Trash2 size={13}/>
@@ -1018,6 +1306,69 @@ function TicketEditPanel({ ticket, onUpdate }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* تبويب دورة الحياة */}
+      {tab === 'lifecycle' && (
+        <div style={{ background:'var(--ink-3)', borderRadius:8, padding:14 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--text-2)', marginBottom:12 }}>
+            📋 دورة حياة القطع — تذكرة {ticket.order_number}
+          </div>
+
+          {ticketParts.length === 0 ? (
+            <div style={{ fontSize:12, color:'var(--muted)', padding:'12px', textAlign:'center' }}>
+              لا توجد قطع مضافة لهذه التذكرة
+            </div>
+          ) : ticketParts.map(p => (
+            <div key={p.id} style={{ padding:'12px 14px', background:'var(--ink-2)', borderRadius:8, marginBottom:10 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:10 }}>
+                <span style={{ fontWeight:700, color:'var(--text-2)', fontSize:13 }}>📦 {p.part_name}</span>
+                <span style={{ fontFamily:'monospace', color:'var(--blue)', fontSize:12 }}>
+                  {p.quantity} × {Number(p.unit_price).toLocaleString()} ريال
+                </span>
+              </div>
+
+              <div style={{ display:'flex', flexDirection:'column', gap:6, paddingRight:10, borderRight:'2px solid var(--border)' }}>
+                {[
+                  { n:1, color:'var(--blue)',  icon:'📥', label:'دخلت المخزون',    value:'مخزون الفرع', show: true },
+                  { n:2, color:'var(--amber)', icon:'📤', label:'صُرفت لتذكرة',   value: ticket.order_number, mono: true, show: true },
+                  { n:3, color:'var(--amber)', icon:'👤', label:'العميل',          value: ticket.customer_name, show: true },
+                  { n:4, color:'var(--amber)', icon:'📱', label:'الجهاز',          value: `${ticket.brand} ${ticket.model}${ticket.color?' ('+ticket.color+')':''}`, show: true },
+                  { n:5, color:'var(--amber)', icon:'🔧', label:'الفني',           value: ticket.technician_name || 'لم يُعيَّن بعد', show: true },
+                  { n:6, color: ticket.status==='delivered'?'var(--green)':ticket.status==='rejected'?'var(--red)':'var(--amber)',
+                    icon: ticket.status==='delivered'?'✅':ticket.status==='rejected'?'❌':'⏳',
+                    label:'مصير القطعة',
+                    value: ticket.status==='delivered' ? 'سُلِّمت مع الجهاز للعميل' :
+                           ticket.status==='rejected'  ? 'أُرجعت للمخزون' : 'لا تزال في التذكرة',
+                    show: true },
+                  { n:7, color:'var(--green)', icon:'📅', label:'تاريخ التسليم',
+                    value: ticket.delivered_at ? new Date(ticket.delivered_at).toLocaleDateString('ar-SA') : '—',
+                    show: ticket.status==='delivered' },
+                ].filter(r => r.show).map(r => (
+                  <div key={r.n} style={{ display:'flex', gap:8, alignItems:'center', fontSize:12 }}>
+                    <span style={{ width:18, height:18, borderRadius:'50%', background:r.color,
+                      display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:9, color:'#fff', fontWeight:700 }}>
+                      {r.n}
+                    </span>
+                    <span style={{ color:'var(--muted)', width:90, flexShrink:0 }}>{r.icon} {r.label}:</span>
+                    <span style={{ color:'var(--text-2)', fontWeight:500, fontFamily: r.mono?'monospace':'inherit' }}>{r.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {ticketParts.length > 0 && (
+            <div style={{ padding:'10px 14px', background:'rgba(16,185,129,.06)', border:'1px solid rgba(16,185,129,.2)', borderRadius:8, fontSize:12, marginTop:8 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4 }}>
+                <span style={{ color:'var(--muted)' }}>إجمالي القطع:</span>
+                <span style={{ fontFamily:'monospace', fontWeight:700, color:'var(--blue)' }}>
+                  {ticketParts.reduce((s,p)=>s+Number(p.unit_price)*Number(p.quantity),0).toLocaleString()} ريال
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

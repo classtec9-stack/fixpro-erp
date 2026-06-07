@@ -194,9 +194,9 @@ const getTicketInvoiceData = async (req, res, next) => {
 
     // الفاتورة الحالية إن وجدت
     const { rows: invoices } = await query(
-      `SELECT i.*, COALESCE(SUM(ip.amount), 0) as paid_amount
+      `SELECT i.*, COALESCE(SUM(p.amount), 0) as paid_amount
        FROM invoices i
-       LEFT JOIN invoice_payments ip ON ip.invoice_id = i.id
+       LEFT JOIN payments p ON p.invoice_id = i.id
        WHERE i.order_id = $1
        GROUP BY i.id
        ORDER BY i.created_at DESC LIMIT 1`, [orderId]
@@ -260,7 +260,7 @@ const finalizeInvoice = async (req, res, next) => {
         `UPDATE invoices SET
            labor_cost=$1, parts_cost=$2, subtotal=$3, discount=$4, discount_reason=$5,
            vat_amount=$6, total=$7, balance_due=(total - COALESCE((
-             SELECT SUM(amount) FROM invoice_payments WHERE invoice_id=invoices.id
+             SELECT SUM(amount) FROM payments WHERE invoice_id=invoices.id
            ), 0)),
            notes=$8, updated_at=NOW()
          WHERE order_id=$9 RETURNING *`,
@@ -293,4 +293,82 @@ const finalizeInvoice = async (req, res, next) => {
   } finally { client.release(); }
 };
 
-module.exports = { createInvoice, finalizeInvoice, getTicketInvoiceData, recordPayment, getInvoices, getInvoiceById };
+// POST /api/invoices/:id/cancel — إلغاء الفاتورة
+const cancelInvoice = async (req, res, next) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const { reason } = req.body;
+    const branchId = req.user.branch_id || null;
+
+    const { rows: inv } = await client.query(
+      `SELECT * FROM invoices WHERE id=$1 AND ($2::uuid IS NULL OR branch_id=$2)`,
+      [req.params.id, branchId]
+    );
+    if (!inv.length) throw new AppError('الفاتورة غير موجودة', 404);
+    if (inv[0].status === 'cancelled') throw new AppError('الفاتورة ملغاة مسبقاً');
+    if (inv[0].status === 'paid') throw new AppError('لا يمكن إلغاء فاتورة مدفوعة بالكامل — استخدم الاسترداد');
+
+    const cancelNote = reason || 'إلغاء بدون سبب';
+    const { rows } = await client.query(
+      `UPDATE invoices SET
+         status='cancelled'::invoice_status,
+         notes=CONCAT(COALESCE(notes,''), ' | إلغاء: ' || $1),
+         updated_at=NOW()
+       WHERE id=$2 RETURNING *`,
+      [cancelNote, req.params.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'تم إلغاء الفاتورة', data: rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally { client.release(); }
+};
+
+// POST /api/invoices/:id/refund — استرداد مبلغ
+const refundInvoice = async (req, res, next) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const { amount, reason, method = 'cash' } = req.body;
+    if (!amount || amount <= 0) throw new AppError('مبلغ الاسترداد غير صالح');
+    if (!reason) throw new AppError('سبب الاسترداد مطلوب');
+
+    const branchId = req.user.branch_id || null;
+    const { rows: inv } = await client.query(
+      `SELECT * FROM invoices WHERE id=$1 AND ($2::uuid IS NULL OR branch_id=$2)`,
+      [req.params.id, branchId]
+    );
+    if (!inv.length) throw new AppError('الفاتورة غير موجودة', 404);
+    if (!['paid','partial'].includes(inv[0].status)) throw new AppError('لا يمكن الاسترداد — الفاتورة لم تُدفع');
+    if (parseFloat(amount) > parseFloat(inv[0].paid_amount)) throw new AppError(`المبلغ أكبر من المدفوع (${inv[0].paid_amount})`);
+
+    // سجل الاسترداد كدفعة سالبة
+    await client.query(
+      `INSERT INTO payments (invoice_id, received_by, amount, method, reference_no, notes)
+       VALUES ($1,$2,$3,$4,'REFUND',$5)`,
+      [req.params.id, req.user.id, -Math.abs(parseFloat(amount)), method,
+       `استرداد: ${reason}`]
+    );
+
+    const refundAmt = parseFloat(amount);
+    const { rows } = await client.query(
+      `UPDATE invoices SET
+         notes=CONCAT(COALESCE(notes,''), ' | استرداد ' || $1 || ' ريال: ' || $2),
+         refund_amount=COALESCE(refund_amount,0)+$3,
+         updated_at=NOW()
+       WHERE id=$4 RETURNING *`,
+      [refundAmt, reason, refundAmt, req.params.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: `تم تسجيل استرداد ${amount} ريال`, data: rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally { client.release(); }
+};
+
+module.exports = { createInvoice, finalizeInvoice, getTicketInvoiceData, recordPayment, getInvoices, getInvoiceById, cancelInvoice, refundInvoice };

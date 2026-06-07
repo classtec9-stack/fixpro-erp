@@ -41,10 +41,46 @@ const getParts = async (req, res, next) => {
 const createPart = async (req, res, next) => {
   try {
     const { name, sku, barcode, category, brand_compat, quantity, min_quantity,
-            cost_price, sell_price, supplier_id, location, notes } = req.body;
+            cost_price, sell_price, supplier_id, location, notes, force_create } = req.body;
 
-    const initQty = parseInt(quantity) || 0;
+    if (!name || !sell_price) throw new AppError('اسم القطعة وسعر البيع مطلوبان');
+
+    const initQty  = parseInt(quantity)    || 0;
     const initCost = parseFloat(cost_price) || 0;
+
+    // D4: بحث عن أصناف مشابهة قبل الإنشاء (إلا إذا force_create = true)
+    if (!force_create) {
+      const { rows: similar } = await query(
+        `SELECT id, name, quantity, sell_price
+         FROM parts
+         WHERE branch_id = $1
+           AND is_active = true
+           AND similarity(LOWER(TRIM(name)), LOWER(TRIM($2))) > 0.4
+         ORDER BY similarity(LOWER(TRIM(name)), LOWER(TRIM($2))) DESC
+         LIMIT 5`,
+        [req.user.branch_id, name]
+      ).catch(() => ({ rows: [] })); // pg_trgm قد لا يكون مفعّلاً بعد
+
+      const exactMatch = similar.find(
+        s => s.name.trim().toLowerCase() === name.trim().toLowerCase()
+      );
+      if (exactMatch) {
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_PART',
+          message: `الصنف "${exactMatch.name}" موجود مسبقاً (الكمية: ${exactMatch.quantity}). استخدم Restock لزيادة الكمية.`,
+          data: { existing: exactMatch }
+        });
+      }
+      if (similar.length > 0) {
+        return res.status(200).json({
+          success: false,
+          code: 'SIMILAR_PARTS_FOUND',
+          message: 'وُجدت أصناف مشابهة — هل تقصد أحدها؟',
+          data: { suggestions: similar }
+        });
+      }
+    }
 
     const { rows } = await query(
       `INSERT INTO parts
@@ -320,17 +356,31 @@ const getPartById = async (req, res, next) => {
       [req.params.id]
     );
 
-    // آخر 30 حركة للـ Timeline
+    // آخر 30 حركة للـ Timeline — مع JOIN كامل للتتبع
     const { rows: movements } = await query(
-      `SELECT im.*,
-         u.full_name as performed_by_name,
+      `SELECT
+         im.*,
+         u.full_name          as performed_by_name,
+         -- بيانات التذكرة والعميل والجهاز والفني
          o.order_number,
-         s.name as supplier_name
+         o.status             as order_status,
+         o.created_at         as order_created_at,
+         c.full_name          as customer_name,
+         c.phone              as customer_phone,
+         d.brand              as device_brand,
+         d.model              as device_model,
+         d.device_type,
+         tech.full_name       as technician_name,
+         -- بيانات المورد (للشراء)
+         s.name               as supplier_name
        FROM inventory_movements im
-       LEFT JOIN users   u ON u.id = im.created_by
-       LEFT JOIN orders  o ON o.id = im.reference_id AND im.reference_type = 'order'
+       LEFT JOIN users   u    ON u.id    = im.created_by
+       LEFT JOIN orders  o    ON o.id    = im.reference_id AND im.reference_type = 'order'
+       LEFT JOIN customers c  ON c.id    = o.customer_id
+       LEFT JOIN devices d    ON d.id    = o.device_id
+       LEFT JOIN users tech   ON tech.id = o.technician_id
        LEFT JOIN part_purchases pp ON pp.id = im.reference_id AND im.reference_type = 'purchase'
-       LEFT JOIN suppliers s ON s.id = pp.supplier_id
+       LEFT JOIN suppliers s  ON s.id    = pp.supplier_id
        WHERE im.part_id = $1
        ORDER BY im.created_at DESC
        LIMIT 30`,

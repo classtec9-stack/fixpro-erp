@@ -77,7 +77,7 @@ router.post('/test', authenticate, authorize('admin','branch_manager'), async (r
 });
 
 // POST /api/whatsapp/send
-router.post('/send', authenticate, async (req, res, next) => {
+router.post('/send', authenticate, authorize('admin','branch_manager','receptionist','customer_service'), async (req, res, next) => {
   try {
     const { phone, message, ticket_id } = req.body;
     if (!phone || !message) throw new AppError('الهاتف والرسالة مطلوبان');

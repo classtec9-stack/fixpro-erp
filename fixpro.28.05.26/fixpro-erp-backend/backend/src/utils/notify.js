@@ -84,12 +84,12 @@ const events = {
   },
 
   // طلب موافقة عميل
-  customerApprovalNeeded: (branchId, orderId, orderNum, customerName, customerPhone) =>
+  customerApprovalNeeded: (branchId, orderId, orderNum, customerName, customerPhone, note = '') =>
     notifyRole({ branchId, orderId,
       roles: ['customer_service','receptionist'],
       type: 'customer_review',
       priority: 'high',
-      message: `📞 طلب موافقة العميل: ${customerName} (${customerPhone}) | ${orderNum}` }),
+      message: `📞 طلب موافقة العميل: ${customerName} (${customerPhone}) | ${orderNum}${note ? ` | 📋 ${note}` : ''}` }),
 
   // طلب قطعة
   partRequested: (branchId, orderId, orderNum, partName, techName) =>

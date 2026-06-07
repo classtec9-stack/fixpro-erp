@@ -39,7 +39,8 @@ const TRANSITIONS = {
   waiting_approval: [
     { to: 'in_repair',        label: 'وافق العميل — بدء الإصلاح', icon: '✅', color: '#10B981' },
     { to: 'waiting_part',     label: 'انتظار قطعة',                icon: '📦', color: '#F97316', needsPart: true },
-    { to: 'awaiting_technician_rejection', label: 'رفض العميل — انتظر تأكيد الفني', icon: '⚠️', color: '#EF4444', needsReason: true },
+    { to: 'awaiting_technician_rejection', label: 'رفض العميل — توجد قطع مصروفة', icon: '⚠️', color: '#EF4444', needsReason: true },
+    { to: 'rejected',         label: 'رفض العميل — لا توجد قطع',  icon: '✗',  color: '#EF4444', needsReason: true, noPartsOnly: true },
     { to: 'diagnosing',       label: 'إعادة الفحص',                icon: '🔬', color: '#8B5CF6' },
   ],
   awaiting_technician_rejection: [
@@ -77,6 +78,15 @@ export function StatusChangeButton({ ticket, onSuccess }) {
   if (user?.role === 'receptionist') {
     transitions = transitions.filter(t => RECEPTIONIST_ALLOWED.includes(t.to))
   }
+
+  // noPartsOnly: يظهر فقط إذا لا توجد قطع في التذكرة
+  // hasPartsTransition: يظهر فقط إذا توجد قطع
+  const hasParts = ticket.parts_count > 0 || (ticket.order_parts && ticket.order_parts.length > 0)
+  transitions = transitions.filter(t => {
+    if (t.noPartsOnly && hasParts)    return false  // رفض مباشر — فقط بدون قطع
+    if (t.to === 'awaiting_technician_rejection' && !hasParts) return false  // مسار القطع — فقط مع قطع
+    return true
+  })
 
   if (!transitions.length) return null
 

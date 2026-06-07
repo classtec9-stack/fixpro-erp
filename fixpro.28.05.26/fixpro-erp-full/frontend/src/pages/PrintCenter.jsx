@@ -53,6 +53,43 @@ export default function PrintCenter() {
     setTimeout(() => { win.print(); win.close() }, 500)
   }
 
+  // طباعة الملصق
+  const printLabel = () => {
+    if (!selectedTicket) return
+    const t = selectedTicket
+    const lw = shop?.label_width  || 50
+    const lh = shop?.label_height || 25
+    const labelsHtml = `
+      <div class="label">
+        <div class="order">${t.order_number}</div>
+        <div class="device">${t.brand} ${t.model}${t.color ? ' | ' + t.color : ''}</div>
+        <div class="cust">${t.customer_name} | ${t.customer_phone}</div>
+        <div class="date">${new Date(t.received_at||Date.now()).toLocaleDateString('ar-SA')} | ${shop?.shop_name||'FixPro'}</div>
+      </div>`
+    const win = window.open('', '_blank', 'width=300,height=400')
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>ملصق</title>
+      <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{direction:rtl;font-family:Arial,sans-serif}
+        .label{width:${lw}mm;height:${lh}mm;border:0.5px solid #000;padding:2mm;
+          display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
+        .order{font-size:${lh>20?11:9}px;font-weight:900;letter-spacing:1px;text-align:center}
+        .device{font-size:${lh>20?8:7}px;text-align:center;overflow:hidden;white-space:nowrap}
+        .cust{font-size:${lh>20?8:7}px;text-align:center}
+        .date{font-size:7px;text-align:center;color:#666}
+        @media print{@page{margin:2mm;size:${lw}mm ${lh}mm}}
+      </style></head><body>${labelsHtml}</body></html>`)
+    win.document.close()
+    setTimeout(() => { win.print(); win.close() }, 500)
+  }
+
+  // طباعة الوصل والملصق معاً
+  const printBoth = () => {
+    if (!previewHtml || !selectedTicket) return
+    printReceipt()
+    setTimeout(() => { printLabel() }, 1200)
+  }
+
   // تحميل PDF
   const downloadPDF = async () => {
     if (!selectedTicket) return
@@ -180,6 +217,10 @@ export default function PrintCenter() {
                 <button className="btn btn-primary w-full" style={{ justifyContent:'center', padding:'10px' }}
                   onClick={printReceipt} disabled={!selectedTicket}>
                   <Printer size={15}/> طباعة الوصل
+                </button>
+                <button className="btn w-full" style={{ justifyContent:'center', padding:'10px', background:'var(--ink-3)', border:'1px solid var(--border)', color:'var(--text-2)' }}
+                  onClick={printBoth} disabled={!selectedTicket}>
+                  <Printer size={15}/> طباعة الوصل والملصق معاً
                 </button>
                 <button className="btn btn-ghost w-full" style={{ justifyContent:'center', padding:'10px' }}
                   onClick={downloadPDF} disabled={!selectedTicket}>

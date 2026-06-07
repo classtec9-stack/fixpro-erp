@@ -51,7 +51,7 @@ import ServicePricesPage from './pages/ServicePrices'
 import DevicesPage    from './pages/Devices'
 import BranchSelector from './components/BranchSelector'
 import NotificationCenter from './components/NotificationCenter'
-import { CustomersPage, InventoryPage, ReportsPage, SuppliersPage } from './pages/other'
+import { CustomersPage, InventoryPage, ReportsPage, SuppliersPage, DefectivePage } from './pages/other'
 
 function ProtectedLayout() {
   const { user } = useAuth()
@@ -120,6 +120,7 @@ function ProtectedLayout() {
             <Route path="/appointments"   element={<AppointmentsPage />} />
             <Route path="/service-prices" element={<RoleRoute element={<ServicePricesPage />} roles={['admin','branch_manager']} />} />
             <Route path="/suppliers"      element={<RoleRoute element={<SuppliersPage />}     roles={['admin','branch_manager','warehouse','accountant']} />} />
+            <Route path="/defective"      element={<RoleRoute element={<DefectivePage />}     roles={['admin','branch_manager','warehouse']} />} />
             <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>

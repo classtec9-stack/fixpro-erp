@@ -1,286 +1,330 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import api from '../services/api'
-import { StatCard, StatusBadge, Loading } from '../components/ui'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { AlertTriangle, TrendingUp, Wrench, Package, Users, Receipt } from 'lucide-react'
+import { Loading } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
-import { useT } from '../context/LangContext'
+import { useBranch } from '../context/BranchContext'
 import { useNavigate } from 'react-router-dom'
-import { format } from 'date-fns'
-import { ar } from 'date-fns/locale'
+import {
+  TrendingUp, TrendingDown, Wrench, Package, Users, Receipt,
+  AlertTriangle, Clock, CheckCircle, XCircle, DollarSign,
+  BarChart2, Truck, ShieldCheck, ArrowUpRight, ArrowDownRight
+} from 'lucide-react'
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis,
+  Tooltip, ResponsiveContainer, CartesianGrid
+} from 'recharts'
 
-// ─── صلاحيات كل قسم ───────────────────────────────────────
-const CAN = {
-  seeRevenue:    ['admin', 'branch_manager', 'accountant'],
-  seeAllOrders:  ['admin', 'branch_manager', 'receptionist', 'customer_service'],
-  seeTechPerf:   ['admin', 'branch_manager'],
-  seeInventory:  ['admin', 'branch_manager', 'warehouse'],
-  seeInvoices:   ['admin', 'branch_manager', 'accountant', 'receptionist'],
+const STATUS_CONFIG = {
+  new:                      { label:'جديدة',           color:'#6366F1' },
+  quick_check:              { label:'فحص سريع',         color:'#8B5CF6' },
+  diagnosing:               { label:'قيد الفحص',        color:'#F59E0B' },
+  waiting_approval:         { label:'انتظار موافقة',    color:'#EF4444' },
+  in_repair:                { label:'داخل الورشة',       color:'#3B82F6' },
+  waiting_part:             { label:'انتظار قطعة',       color:'#F97316' },
+  part_transferred:         { label:'القطعة في الطريق', color:'#06B6D4' },
+  awaiting_technician_rejection:{ label:'انتظار تأكيد', color:'#EC4899' },
+  ready:                    { label:'جاهز للتسليم',     color:'#10B981' },
+  delivered:                { label:'مُسلَّم',           color:'#6B7280' },
+  rejected:                 { label:'مرفوض',             color:'#EF4444' },
 }
 
-const can = (role, perm) => CAN[perm]?.includes(role)
+function KPICard({ label, value, sub, icon: Icon, color, trend, prefix='', suffix='' }) {
+  const up = trend > 0
+  return (
+    <div style={{
+      background:'var(--ink-2)', borderRadius:12, padding:'18px 20px',
+      border:'1px solid var(--border)', position:'relative', overflow:'hidden'
+    }}>
+      <div style={{ position:'absolute', top:16, left:16, width:40, height:40, borderRadius:10,
+        background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <Icon size={18} color={color}/>
+      </div>
+      <div style={{ paddingRight:52 }}>
+        <div style={{ fontSize:11, color:'var(--muted)', marginBottom:4 }}>{label}</div>
+        <div style={{ fontSize:22, fontWeight:800, color:'var(--text-2)', fontFamily:'monospace', lineHeight:1 }}>
+          {prefix}{typeof value === 'number' ? value.toLocaleString('ar-SA') : value}{suffix}
+        </div>
+        {(sub !== undefined || trend !== undefined) && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6 }}>
+            {trend !== undefined && (
+              <span style={{ display:'flex', alignItems:'center', gap:2, fontSize:11,
+                fontWeight:600, color: up ? 'var(--green)' : 'var(--red)' }}>
+                {up ? <ArrowUpRight size={12}/> : <ArrowDownRight size={12}/>}
+                {Math.abs(trend)}%
+              </span>
+            )}
+            {sub && <span style={{ fontSize:11, color:'var(--muted)' }}>{sub}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
-const greeting = () => {
+function SectionTitle({ icon: Icon, title, color='var(--blue)' }) {
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
+      <div style={{ width:3, height:16, background:color, borderRadius:2 }}/>
+      {Icon && <Icon size={15} color={color}/>}
+      <span style={{ fontWeight:700, fontSize:13, color:'var(--text-2)' }}>{title}</span>
+    </div>
+  )
+}
+
+function StatusPill({ status, count }) {
+  const cfg = STATUS_CONFIG[status] || { label: status, color:'#6B7280' }
+  return (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+      padding:'7px 12px', borderRadius:8, background:`${cfg.color}12`,
+      border:`1px solid ${cfg.color}30`, marginBottom:4 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+        <div style={{ width:8, height:8, borderRadius:'50%', background:cfg.color }}/>
+        <span style={{ fontSize:12, color:'var(--text-2)' }}>{cfg.label}</span>
+      </div>
+      <span style={{ fontWeight:700, fontFamily:'monospace', fontSize:13, color:cfg.color }}>{count}</span>
+    </div>
+  )
+}
+
+const greetingByTime = () => {
   const h = new Date().getHours()
   if (h < 12) return 'صباح الخير'
   if (h < 17) return 'مساء الخير'
   return 'مساء النور'
 }
 
-export default function Dashboard() {
+export default function DashboardPage() {
   const { user } = useAuth()
+  const { selectedBranch } = useBranch()
   const navigate = useNavigate()
-  const { t, isEn } = useT()
+  const [chartPeriod, setChartPeriod] = useState('week')
   const role = user?.role
 
+  const CAN = {
+    finance:    ['admin','branch_manager','accountant'].includes(role),
+    allTickets: ['admin','branch_manager','receptionist','customer_service'].includes(role),
+    techPerf:   ['admin','branch_manager'].includes(role),
+    inventory:  ['admin','branch_manager','warehouse'].includes(role),
+    suppliers:  ['admin','branch_manager','warehouse'].includes(role),
+  }
+
   const { data, isLoading } = useQuery({
-    queryKey: ['dashboard', user?.id],
+    queryKey: ['dashboard', selectedBranch],
     queryFn: () => api.get('/dashboard'),
-    refetchInterval: 60000
+    refetchInterval: 60_000,
   })
 
-  const { data: revenueData } = useQuery({
-    queryKey: ['revenue'],
-    queryFn: () => api.get('/reports/revenue?period=monthly'),
-    enabled: can(role, 'seeRevenue')
+  const { data: chartData } = useQuery({
+    queryKey: ['dashboard-chart', chartPeriod, selectedBranch],
+    queryFn: () => api.get(`/dashboard/revenue?period=${chartPeriod}`),
+    enabled: CAN.finance,
   })
 
-  if (isLoading) return <Loading />
+  const d = data?.data || {}
+  const chart = chartData?.data || []
 
-  const d     = data?.data || {}
-  const stats = d.stats    || {}
+  if (isLoading) return <Loading/>
 
-  const chartData = (revenueData?.data || []).map(r => ({
-    name:    format(new Date(r.period), 'MMM', { locale: ar }),
-    إيرادات: Math.round(r.revenue || 0)
-  }))
+  const ROLE_LABELS = {
+    admin:'مدير النظام', branch_manager:'مشرف الفرع',
+    receptionist:'موظف استقبال', technician:'مهندس صيانة',
+    warehouse:'مسؤول المخزن', accountant:'محاسب', customer_service:'خدمة العملاء'
+  }
 
   return (
-    <div className="page fade-in">
+    <div className="page fade-in" style={{ display:'flex', flexDirection:'column', gap:24 }}>
 
-      {/* ── رأس الصفحة ── */}
-      <div className="page-header">
+      {/* الترحيب */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12 }}>
         <div>
-          <div className="page-title">
-            {greeting()}، {user?.fullName?.split(' ')[0]} 👋
+          <div style={{ fontSize:20, fontWeight:800, color:'var(--text-2)' }}>
+            {greetingByTime()}، {user?.full_name?.split(' ')[0]} 👋
           </div>
-          <div className="page-sub">
-            {format(new Date(), 'EEEE، d MMMM yyyy', { locale: ar })}
-            <span style={{ marginRight: 8, padding: '2px 8px', borderRadius: 4, fontSize: 11,
-              background: 'var(--blue-dim)', color: 'var(--blue)' }}>
-              {getRoleLabel(role)}
+          <div style={{ fontSize:12, color:'var(--muted)', marginTop:2 }}>
+            {ROLE_LABELS[role]} · {new Date().toLocaleDateString('ar-SA', { weekday:'long', year:'numeric', month:'long', day:'numeric' })}
+          </div>
+        </div>
+        {d.critical_alerts > 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px',
+            background:'rgba(239,68,68,.1)', borderRadius:8, border:'1px solid rgba(239,68,68,.3)',
+            cursor:'pointer' }} onClick={() => navigate('/notifications')}>
+            <AlertTriangle size={14} color="var(--red)"/>
+            <span style={{ fontSize:12, color:'var(--red)', fontWeight:600 }}>
+              {d.critical_alerts} تنبيه حرج
             </span>
           </div>
-        </div>
-      </div>
-
-      {/* ── بطاقات الإحصاء — تتغير حسب الدور ── */}
-      <div className="stats-grid">
-        {/* تذاكر اليوم — يراها الجميع لكن بمحتوى مختلف */}
-        <StatCard
-          label={role === 'technician' ? (isEn ? 'My Tickets Today' : 'تذاكري اليوم') : t('todayTickets')}
-          value={stats.orders_today ?? 0}
-          sub={role === 'technician' ? (isEn?'Assigned to you today':'التذاكر المسندة إليك اليوم') : (isEn?'Total tickets received today':'إجمالي التذاكر المستلمة')}
-          color="blue"
-        />
-
-        {/* قيد العمل — يراها الجميع */}
-        <StatCard
-          label={role === 'technician' ? (isEn?'My Active Tickets':'تذاكري النشطة') : t('activeOrders')}
-          value={stats.active_orders ?? 0}
-          sub="لم تُسلَّم بعد"
-          color="amber"
-        />
-
-        {/* الإيرادات — للمدير والمحاسب فقط */}
-        {can(role, 'seeRevenue') ? (
-          <StatCard
-            label={t('monthRevenue')}
-            value={`${(stats.month_revenue || 0).toLocaleString('ar-SA')} ر`}
-            sub="من الفواتير المدفوعة"
-            color="green"
-          />
-        ) : (
-          /* بدلاً عنها: تذاكر جاهزة للتسليم */
-          <StatCard
-            label={isEn?'Ready for Pickup':'جاهزة للتسليم'}
-            value={(d.status_breakdown || []).find(s => s.status === 'ready')?.count ?? 0}
-            sub="تذاكر بانتظار الاستلام"
-            color="green"
-          />
-        )}
-
-        {/* المخزون — لمسؤول المخزن والمدير / للفني: تذاكر مكتملة اليوم */}
-        {can(role, 'seeInventory') ? (
-          <StatCard
-            label={t('lowStockAlerts')}
-            value={stats.low_stock_alerts ?? 0}
-            sub={stats.low_stock_alerts > 0 ? 'صنف تحت الحد الأدنى' : 'المخزون سليم'}
-            subType={stats.low_stock_alerts > 0 ? 'down' : 'up'}
-            color="purple"
-          />
-        ) : (
-          <StatCard
-            label={isEn?'Completed Today':'مكتملة اليوم'}
-            value={(d.technicians || []).find(t => t.id === user?.id)?.completed_today ?? 0}
-            sub="تذاكر أنهيتها اليوم"
-            subType="up"
-            color="purple"
-          />
         )}
       </div>
 
-      {/* ── المحتوى الرئيسي — حسب الدور ── */}
+      {/* KPIs المالية */}
+      {CAN.finance && d.financial && (
+        <>
+          <SectionTitle icon={DollarSign} title="الأداء المالي" color="var(--green)"/>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:12 }}>
+            <KPICard label="إيرادات اليوم" value={d.financial.today_revenue}
+              icon={DollarSign} color="var(--green)" suffix=" ر.س"/>
+            <KPICard label="إيرادات الشهر" value={d.financial.month_revenue}
+              icon={TrendingUp} color="var(--blue)"
+              trend={d.financial.growth_pct} sub="مقارنة بالشهر الماضي" suffix=" ر.س"/>
+            <KPICard label="ذمم مستحقة" value={d.financial.pending_balance}
+              icon={Receipt} color="var(--amber)" suffix=" ر.س"
+              sub={`${d.financial.pending_invoices} فاتورة معلقة`}/>
+            <KPICard label="فواتير مدفوعة" value={d.financial.paid_invoices}
+              icon={CheckCircle} color="var(--green)" suffix=" هذا الشهر"/>
+          </div>
 
-      {/* مدير / مشرف / موظف استقبال / خدمة عملاء */}
-      {can(role, 'seeAllOrders') && (
-        <div className="two-col">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">{isEn?'Recent Tickets':t('recentTickets')}</span>
-              <button className="btn btn-ghost btn-sm" onClick={() => navigate('/tickets')}>
-                {t('viewAll')}
-              </button>
+          {/* مخطط الإيرادات */}
+          <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
+              <SectionTitle icon={BarChart2} title="مخطط الإيرادات"/>
+              <div style={{ display:'flex', gap:4, background:'var(--ink-3)', borderRadius:8, padding:3 }}>
+                {[{k:'week',l:'أسبوع'},{k:'month',l:'شهر'}].map(p => (
+                  <button key={p.k} onClick={() => setChartPeriod(p.k)}
+                    style={{ padding:'4px 12px', borderRadius:6, border:'none', cursor:'pointer',
+                      fontFamily:'var(--font)', fontSize:11, fontWeight:500,
+                      background: chartPeriod===p.k ? 'var(--blue)' : 'transparent',
+                      color: chartPeriod===p.k ? '#fff' : 'var(--muted)' }}>
+                    {p.l}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>رقم</th><th>العميل</th><th>الجهاز</th><th>الحالة</th></tr>
-                </thead>
-                <tbody>
-                  {(d.recent_orders || []).map(o => (
-                    <tr key={o.order_number} style={{ cursor:'pointer' }}
-                      onClick={() => navigate('/tickets')}>
-                      <td><span className="font-mono text-xs text-blue">{o.order_number}</span></td>
-                      <td style={{ color:'var(--text-2)' }}>{o.customer_name}</td>
-                      <td className="text-muted2 text-sm">{o.brand} {o.model}</td>
-                      <td><StatusBadge status={o.status} /></td>
-                    </tr>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={chart} margin={{ top:0, right:0, left:-20, bottom:0 }}>
+                <defs>
+                  <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#3B82F6" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false}/>
+                <XAxis dataKey="period" tick={{ fontSize:10, fill:'var(--muted)' }}
+                  tickFormatter={v => new Date(v).toLocaleDateString('ar-SA',{day:'2-digit',month:'2-digit'})}/>
+                <YAxis tick={{ fontSize:10, fill:'var(--muted)' }}
+                  tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : v}/>
+                <Tooltip
+                  formatter={(v) => [`${Number(v).toLocaleString()} ر.س`, 'الإيرادات']}
+                  labelFormatter={v => new Date(v).toLocaleDateString('ar-SA')}
+                  contentStyle={{ background:'var(--ink-2)', border:'1px solid var(--border)', borderRadius:8, direction:'rtl' }}/>
+                <Area type="monotone" dataKey="revenue" stroke="#3B82F6" strokeWidth={2}
+                  fill="url(#revGrad)" dot={false}/>
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
+
+      {/* التذاكر */}
+      <div style={{ display:'grid', gridTemplateColumns: CAN.allTickets ? '1fr 280px' : '1fr', gap:16 }}>
+        {/* آخر التذاكر */}
+        <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+            <SectionTitle icon={Wrench} title="آخر التذاكر"/>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/tickets')}>عرض الكل</button>
+          </div>
+
+          {/* KPIs التذاكر */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:14 }}>
+            {[
+              { label:'اليوم', val: d.tickets?.today, color:'var(--blue)' },
+              { label:'نشطة', val: d.tickets?.active, color:'var(--amber)' },
+              { label:'عاجلة', val: d.tickets?.urgent, color:'var(--red)' },
+            ].map(s => (
+              <div key={s.label} style={{ textAlign:'center', padding:'10px 8px',
+                background:`${s.color}10`, borderRadius:8, border:`1px solid ${s.color}25` }}>
+                <div style={{ fontSize:20, fontWeight:800, color:s.color, fontFamily:'monospace' }}>{s.val || 0}</div>
+                <div style={{ fontSize:11, color:'var(--muted)' }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* جدول التذاكر */}
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                  {['رقم','العميل','الجهاز','الحالة','الأولوية'].map(h => (
+                    <th key={h} style={{ padding:'6px 8px', textAlign:'right', color:'var(--muted)',
+                      fontWeight:500, fontSize:11 }}>{h}</th>
                   ))}
-                  {!d.recent_orders?.length && (
-                    <tr>
-                      <td colSpan={4} style={{ textAlign:'center', color:'var(--muted)', padding:24 }}>
-                        لا توجد تذاكر
+                </tr>
+              </thead>
+              <tbody>
+                {(d.recent_tickets || []).map(t => {
+                  const cfg = STATUS_CONFIG[t.status] || { label: t.status, color:'#6B7280' }
+                  return (
+                    <tr key={t.id} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                      onClick={() => navigate('/tickets')}>
+                      <td style={{ padding:'7px 8px', color:'var(--blue)', fontFamily:'monospace', fontSize:11 }}>
+                        {t.order_number}
+                      </td>
+                      <td style={{ padding:'7px 8px', color:'var(--text-2)' }}>{t.customer_name}</td>
+                      <td style={{ padding:'7px 8px', color:'var(--muted)', fontSize:11 }}>
+                        {t.brand} {t.model}
+                      </td>
+                      <td style={{ padding:'7px 8px' }}>
+                        <span style={{ padding:'2px 8px', borderRadius:4, fontSize:10, fontWeight:600,
+                          background:`${cfg.color}18`, color:cfg.color }}>
+                          {cfg.label}
+                        </span>
+                      </td>
+                      <td style={{ padding:'7px 8px' }}>
+                        {t.priority === 'urgent' && (
+                          <span style={{ color:'var(--red)', fontSize:10, fontWeight:600 }}>⚡ عاجل</span>
+                        )}
                       </td>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* الإيرادات للمدير / أحدث التذاكر لموظف الاستقبال */}
-          {can(role, 'seeRevenue') ? (
-            <div className="card">
-              <div className="card-header">
-                <span className="card-title">{isEn?'Monthly Revenue':'الإيرادات الشهرية'}</span>
-                <TrendingUp size={15} color="var(--green)" />
+                  )
+                })}
+              </tbody>
+            </table>
+            {!d.recent_tickets?.length && (
+              <div style={{ textAlign:'center', padding:'20px', color:'var(--muted)', fontSize:12 }}>
+                لا توجد تذاكر
               </div>
-              {chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={190}>
-                  <AreaChart data={chartData}>
-                    <defs>
-                      <linearGradient id="rev" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor="#3B82F6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis dataKey="name" tick={{ fill:'var(--muted)', fontSize:11 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fill:'var(--muted)', fontSize:11 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background:'var(--ink-3)', border:'1px solid var(--border-2)', borderRadius:6, fontSize:12 }} labelStyle={{ color:'var(--text-2)' }} />
-                    <Area type="monotone" dataKey="إيرادات" stroke="#3B82F6" strokeWidth={2} fill="url(#rev)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div style={{ textAlign:'center', padding:'40px 0', color:'var(--muted)', fontSize:13 }}>
-                  لا توجد بيانات إيرادات بعد
-                </div>
-              )}
-            </div>
-          ) : (
-            /* موظف استقبال / خدمة عملاء — يرى توزيع الحالات */
-            <div className="card">
-              <div className="card-header">
-                <span className="card-title">حالات التذاكر</span>
-              </div>
-              <StatusBreakdown data={d.status_breakdown || []} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* مهندس الصيانة — لوحة خاصة */}
-      {role === 'technician' && (
-        <TechnicianDashboard
-          myOrders={d.recent_orders || []}
-          techData={(d.technicians || []).find(t => t.id === user?.id)}
-          navigate={navigate}
-        />
-      )}
-
-      {/* مسؤول المخزن — لوحة خاصة */}
-      {role === 'warehouse' && (
-        <WarehouseDashboard stats={stats} navigate={navigate} />
-      )}
-
-      {/* محاسب — لوحة خاصة */}
-      {role === 'accountant' && (
-        <div className="two-col">
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">{isEn?'Monthly Revenue':'الإيرادات الشهرية'}</span>
-              <TrendingUp size={15} color="var(--green)" />
-            </div>
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id="rev2" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#10B981" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="name" tick={{ fill:'var(--muted)', fontSize:11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill:'var(--muted)', fontSize:11 }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={{ background:'var(--ink-3)', border:'1px solid var(--border-2)', borderRadius:6, fontSize:12 }} />
-                  <Area type="monotone" dataKey="إيرادات" stroke="#10B981" strokeWidth={2} fill="url(#rev2)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div style={{ textAlign:'center', padding:40, color:'var(--muted)', fontSize:13 }}>لا توجد بيانات</div>
             )}
           </div>
-          <div className="card">
-            <div className="card-header"><span className="card-title">اختصارات</span></div>
-            <div style={{ display:'flex', flexDirection:'column', gap:8, paddingTop:4 }}>
-              <button className="btn btn-ghost w-full" style={{ justifyContent:'flex-end' }} onClick={() => navigate('/invoices')}>
-                <Receipt size={14}/> عرض الفواتير
-              </button>
-              <button className="btn btn-ghost w-full" style={{ justifyContent:'flex-end' }} onClick={() => navigate('/reports')}>
-                <TrendingUp size={14}/> التقارير المالية
-              </button>
-            </div>
-          </div>
         </div>
-      )}
 
-      {/* أداء الفنيين — للمدير والمشرف فقط */}
-      {can(role, 'seeTechPerf') && (d.technicians || []).length > 0 && (
-        <div className="card mt-3">
-          <div className="card-header">
-            <span className="card-title">{t('techPerformance')}</span>
+        {/* توزيع الحالات */}
+        {CAN.allTickets && (
+          <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+            <SectionTitle icon={BarChart2} title="توزيع الحالات" color="var(--purple)"/>
+            {(d.tickets?.by_status || [])
+              .filter(s => !['delivered','cancelled','rejected'].includes(s.status))
+              .sort((a,b) => b.count - a.count)
+              .map(s => (
+                <StatusPill key={s.status} status={s.status} count={parseInt(s.count)}/>
+              ))}
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px,1fr))', gap:10 }}>
+        )}
+      </div>
+
+      {/* أداء الفنيين */}
+      {CAN.techPerf && d.technicians?.length > 0 && (
+        <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+          <SectionTitle icon={Users} title="أداء الفنيين" color="var(--purple)"/>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:10 }}>
             {d.technicians.map(t => (
-              <div key={t.id} style={{ background:'var(--ink-3)', borderRadius:8, padding:'12px 14px', border:'1px solid var(--border)' }}>
-                <div style={{ fontWeight:500, color:'var(--text-2)', marginBottom:6, fontSize:13 }}>{t.full_name}</div>
-                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12 }}>
-                  <span className="text-muted">نشط</span>
-                  <span className="text-amber font-mono">{t.active_orders || 0}</span>
+              <div key={t.id} style={{ padding:'14px', background:'var(--ink-3)',
+                borderRadius:10, border:'1px solid var(--border)' }}>
+                <div style={{ fontWeight:700, color:'var(--text-2)', fontSize:13, marginBottom:10 }}>
+                  🔧 {t.full_name}
                 </div>
-                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginTop:3 }}>
-                  <span className="text-muted">مكتمل اليوم</span>
-                  <span className="text-green font-mono">{t.completed_today || 0}</span>
+                <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                  {[
+                    { label:'نشط', val: t.active || 0, color:'var(--amber)' },
+                    { label:'أنجز اليوم', val: t.done_today || 0, color:'var(--green)' },
+                    { label:'الشهر', val: t.done_month || 0, color:'var(--blue)' },
+                    { label:'متوسط الوقت', val: t.avg_hours ? `${t.avg_hours}h` : '—', color:'var(--muted)' },
+                  ].map(row => (
+                    <div key={row.label} style={{ display:'flex', justifyContent:'space-between',
+                      fontSize:12, padding:'2px 0' }}>
+                      <span style={{ color:'var(--muted)' }}>{row.label}</span>
+                      <span style={{ fontWeight:600, color:row.color, fontFamily:'monospace' }}>{row.val}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
@@ -288,218 +332,100 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* تنبيه المخزون — للمدير ومسؤول المخزن */}
-      {can(role, 'seeInventory') && stats.low_stock_alerts > 0 && (
-        <div className="card mt-3" style={{ borderColor:'var(--amber-dim)', background:'rgba(245,158,11,0.04)' }}>
-          <div className="flex-center gap-2" style={{ color:'var(--amber)' }}>
-            <AlertTriangle size={16} />
-            <span className="font-medium">
-              تحذير: {stats.low_stock_alerts} أصناف تحت الحد الأدنى في المخزون
-            </span>
-            <button className="btn btn-ghost btn-sm" style={{ marginRight:'auto' }}
-              onClick={() => navigate('/inventory')}>
-              عرض التنبيهات
-            </button>
-          </div>
-        </div>
-      )}
+      {/* المخزون والموردون */}
+      {(CAN.inventory || CAN.suppliers) && (
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
 
-    </div>
-  )
-}
+          {/* المخزون */}
+          {CAN.inventory && d.inventory && (
+            <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+                <SectionTitle icon={Package} title="حالة المخزون" color="var(--amber)"/>
+                <button className="btn btn-ghost btn-sm" onClick={() => navigate('/inventory')}>عرض الكل</button>
+              </div>
 
-// ─── لوحة الفني ───────────────────────────────────────────
-function TechnicianDashboard({ myOrders, techData, navigate }) {
-  const { t, isEn } = useT()
-  const STATUS_AR = {
-    new:'تم الاستلام', quick_check:'فحص سريع', diagnosing:'قيد الفحص',
-    waiting_approval:'انتظار موافقة', in_repair:'داخل الورشة',
-    waiting_part:'ينتظر قطعة', ready:'جاهز', delivered:'تم التسليم',
-    rejected:'مرفوض'
-  }
-  const STATUS_BADGE = {
-    new:'badge-new', quick_check:'badge-diag', diagnosing:'badge-diag',
-    in_repair:'badge-repair', waiting_part:'badge-wait', waiting_approval:'badge-wait',
-    ready:'badge-ready', delivered:'badge-done', rejected:'badge-cancel'
-  }
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:14 }}>
+                <div style={{ textAlign:'center', padding:'10px', background:'rgba(239,68,68,.08)',
+                  borderRadius:8, border:'1px solid rgba(239,68,68,.2)' }}>
+                  <div style={{ fontSize:20, fontWeight:800, color:'var(--red)', fontFamily:'monospace' }}>
+                    {d.inventory.low_stock?.length || 0}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--muted)' }}>منخفض المخزون</div>
+                </div>
+                <div style={{ textAlign:'center', padding:'10px', background:'rgba(245,158,11,.08)',
+                  borderRadius:8, border:'1px solid rgba(245,158,11,.2)' }}>
+                  <div style={{ fontSize:20, fontWeight:800, color:'var(--amber)', fontFamily:'monospace' }}>
+                    {d.inventory.defective_count || 0}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--muted)' }}>توالف بانتظار</div>
+                </div>
+              </div>
 
-  return (
-    <div>
-      {/* ملخص الفني */}
-      {techData && (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:16 }}>
-          <div className="stat-card blue">
-            <div className="stat-label">تذاكر نشطة</div>
-            <div className="stat-value">{techData.active_orders || 0}</div>
-          </div>
-          <div className="stat-card green">
-            <div className="stat-label">مكتملة اليوم</div>
-            <div className="stat-value">{techData.completed_today || 0}</div>
-          </div>
-          <div className="stat-card amber">
-            <div className="stat-label">مجموع إنجازاتي</div>
-            <div className="stat-value">{techData.total_completed || 0}</div>
-          </div>
-        </div>
-      )}
-
-      {/* تذاكري */}
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">تذاكري النشطة</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => navigate('/tickets?my=true')}>
-            {t('viewAll')}
-          </button>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>رقم التذكرة</th><th>العميل</th><th>الجهاز</th><th>الحالة</th><th>الوقت</th></tr>
-            </thead>
-            <tbody>
-              {myOrders.filter(o => !['delivered','cancelled','rejected'].includes(o.status)).map(o => {
-                const hrs = Math.round((Date.now() - new Date(o.received_at)) / 3600000)
-                return (
-                  <tr key={o.order_number} style={{ cursor:'pointer' }} onClick={() => navigate('/tickets')}>
-                    <td><span className="font-mono text-xs text-blue">{o.order_number}</span></td>
-                    <td style={{ color:'var(--text-2)' }}>{o.customer_name}</td>
-                    <td className="text-sm text-muted2">{o.brand} {o.model}</td>
-                    <td><span className={`badge ${STATUS_BADGE[o.status] || ''}`}>{STATUS_AR[o.status] || o.status}</span></td>
-                    <td className="text-xs text-muted font-mono">
-                      {hrs < 24 ? `${hrs}س` : `${Math.floor(hrs/24)}ي`}
-                    </td>
-                  </tr>
-                )
-              })}
-              {!myOrders.filter(o => !['delivered','cancelled','rejected'].includes(o.status)).length && (
-                <tr><td colSpan={5} style={{ textAlign:'center', color:'var(--muted)', padding:24 }}>
-                  لا توجد تذاكر نشطة
-                </td></tr>
+              {/* الأكثر استخداماً */}
+              {d.inventory.top_used?.length > 0 && (
+                <>
+                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:6, fontWeight:500 }}>
+                    أكثر القطع استخداماً هذا الشهر
+                  </div>
+                  {d.inventory.top_used.map((p, i) => (
+                    <div key={i} style={{ display:'flex', justifyContent:'space-between',
+                      padding:'5px 0', borderBottom:'1px solid var(--border)', fontSize:12 }}>
+                      <span style={{ color:'var(--text-2)' }}>{p.name}</span>
+                      <span style={{ color:'var(--blue)', fontFamily:'monospace', fontWeight:600 }}>
+                        {p.total_qty} وحدة
+                      </span>
+                    </div>
+                  ))}
+                </>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  )
-}
 
-// ─── لوحة المخزن ──────────────────────────────────────────
-function WarehouseDashboard({ stats, navigate }) {
-  const { t, isEn } = useT()
-  const { data: partsData } = useQuery({
-    queryKey: ['low-stock-dash'],
-    queryFn: () => api.get('/inventory/alerts')
-  })
-  const parts = partsData?.data || []
+              {/* تنبيهات المنخفض */}
+              {d.inventory.low_stock?.length > 0 && (
+                <div style={{ marginTop:12 }}>
+                  <div style={{ fontSize:11, color:'var(--red)', marginBottom:6, fontWeight:500 }}>
+                    ⚠️ تحتاج تجديداً
+                  </div>
+                  {d.inventory.low_stock.slice(0,4).map(p => (
+                    <div key={p.id} style={{ display:'flex', justifyContent:'space-between',
+                      padding:'4px 0', fontSize:11 }}>
+                      <span style={{ color:'var(--text)' }}>{p.name}</span>
+                      <span style={{ color:'var(--red)', fontFamily:'monospace' }}>
+                        {p.quantity} / {p.min_quantity}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-  return (
-    <div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:16 }}>
-        <div className="stat-card purple">
-          <div className="stat-label">تذاكر تنتظر قطعة</div>
-          <div className="stat-value">{stats.active_orders ?? 0}</div>
-        </div>
-        <div className="stat-card amber">
-          <div className="stat-label">أصناف منخفضة</div>
-          <div className="stat-value" style={{ color: parts.length > 0 ? 'var(--red)' : undefined }}>
-            {stats.low_stock_alerts ?? 0}
-          </div>
-        </div>
-        <div className="stat-card blue">
-          <div className="stat-label">حالة المخزون</div>
-          <div className="stat-value" style={{ fontSize:'1.2rem' }}>
-            {stats.low_stock_alerts > 0 ? '⚠️' : '✅'}
-          </div>
-        </div>
-      </div>
-
-      {parts.length > 0 && (
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title" style={{ color:'var(--red)' }}>
-              ⚠️ أصناف تحتاج تعبئة ({parts.length})
-            </span>
-            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/inventory')}>
-              إدارة المخزون
-            </button>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>الصنف</th><th>الكمية الحالية</th><th>الحد الأدنى</th><th>المورد</th></tr></thead>
-              <tbody>
-                {parts.slice(0, 8).map(p => (
-                  <tr key={p.id}>
-                    <td style={{ fontWeight:500, color:'var(--text-2)' }}>{p.name}</td>
-                    <td className="font-mono text-red font-bold">{p.quantity}</td>
-                    <td className="font-mono text-muted">{p.min_quantity}</td>
-                    <td className="text-sm text-muted2">{p.supplier_name || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* الموردون */}
+          {CAN.suppliers && (
+            <div style={{ background:'var(--ink-2)', borderRadius:12, padding:20, border:'1px solid var(--border)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+                <SectionTitle icon={Truck} title="أعلى الموردين" color="var(--blue)"/>
+                <button className="btn btn-ghost btn-sm" onClick={() => navigate('/suppliers')}>عرض الكل</button>
+              </div>
+              {d.suppliers?.length ? d.suppliers.map((s, i) => (
+                <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                  padding:'8px 0', borderBottom:'1px solid var(--border)' }}>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600, color:'var(--text-2)' }}>{s.name}</div>
+                    <div style={{ fontSize:10, color:'var(--muted)' }}>{s.purchases_count} فاتورة شراء</div>
+                  </div>
+                  <span style={{ fontFamily:'monospace', fontWeight:700, color:'var(--blue)', fontSize:12 }}>
+                    {Number(s.total_spent).toLocaleString()} ر.س
+                  </span>
+                </div>
+              )) : (
+                <div style={{ fontSize:12, color:'var(--muted)', textAlign:'center', padding:'20px 0' }}>
+                  لا توجد بيانات موردين
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   )
-}
-
-// ─── توزيع الحالات (لموظف الاستقبال) ─────────────────────
-function StatusBreakdown({ data }) {
-  const STATUS_CONFIG = {
-    new:              { label:'تم الاستلام',      color:'var(--blue)' },
-    quick_check:      { label:'فحص سريع',         color:'var(--purple)' },
-    diagnosing:       { label:'قيد الفحص',        color:'var(--purple)' },
-    in_repair:        { label:'داخل الورشة',      color:'var(--amber)' },
-    waiting_part:     { label:'ينتظر قطعة',       color:'#F97316' },
-    waiting_approval: { label:'انتظار موافقة',    color:'var(--amber)' },
-    awaiting_technician_rejection: { label:'انتظار تأكيد الفني', color:'#EF4444' },
-    ready:            { label:'جاهز للتسليم',     color:'var(--green)' },
-  }
-  const total = data.reduce((s, i) => s + parseInt(i.count || 0), 0)
-
-  if (!data.length) return (
-    <div style={{ textAlign:'center', padding:'30px 0', color:'var(--muted)', fontSize:13 }}>
-      لا توجد تذاكر نشطة
-    </div>
-  )
-
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:10, paddingTop:4 }}>
-      {data.map(s => {
-        const cfg = STATUS_CONFIG[s.status]
-        if (!cfg) return null
-        const pct = total > 0 ? Math.round((s.count / total) * 100) : 0
-        return (
-          <div key={s.status}>
-            <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
-              <span style={{ color:'var(--text-2)' }}>{cfg.label}</span>
-              <span className="font-mono" style={{ color:cfg.color, fontWeight:600 }}>{s.count}</span>
-            </div>
-            <div style={{ height:6, borderRadius:3, background:'var(--ink-4)', overflow:'hidden' }}>
-              <div style={{ width:`${pct}%`, height:'100%', background:cfg.color, borderRadius:3, transition:'width .4s' }} />
-            </div>
-          </div>
-        )
-      })}
-      <div style={{ fontSize:11, color:'var(--muted)', textAlign:'left', marginTop:4 }}>
-        الإجمالي: {total} تذكرة نشطة
-      </div>
-    </div>
-  )
-}
-
-// ─── تسمية الأدوار ─────────────────────────────────────────
-function getRoleLabel(role) {
-  const map = {
-    admin:            'مدير النظام',
-    branch_manager:   'مشرف الفرع',
-    receptionist:     'موظف استقبال',
-    technician:       'مهندس صيانة',
-    customer_service: 'خدمة العملاء',
-    warehouse:        'مسؤول المخزن',
-    accountant:       'محاسب',
-  }
-  return map[role] || role
 }
