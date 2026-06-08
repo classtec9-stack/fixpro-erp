@@ -7,5 +7,5 @@ router.post('/', authorize('admin','branch_manager','receptionist'), c.createOrd
 router.get('/:id', c.getOrderById);
 router.patch('/:id/status', c.updateStatus);
 router.patch('/:id/assign', authorize('admin','branch_manager'), c.assignTechnician);
-router.post('/:id/parts', authorize('admin','branch_manager','technician'), c.addPart);
+router.post('/:id/parts', authorize('admin','branch_manager','technician','warehouse','customer_service'), c.addPart);
 module.exports = router;

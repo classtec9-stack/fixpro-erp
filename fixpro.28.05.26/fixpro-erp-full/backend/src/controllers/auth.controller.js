@@ -60,7 +60,17 @@ const getMe = async (req, res, next) => {
        WHERE u.id = $1`,
       [req.user.id]
     );
-    res.json({ success: true, user: rows[0] });
+    const u = rows[0];
+    res.json({ success: true, user: {
+      id:         u.id,
+      fullName:   u.full_name,
+      email:      u.email,
+      phone:      u.phone,
+      role:       u.role,
+      branchId:   u.branch_id,
+      branchName: u.branch_name,
+      avatarUrl:  u.avatar_url,
+    }});
   } catch (err) { next(err); }
 };
 

@@ -14,11 +14,19 @@ const getOrders = async (req, res, next) => {
     const params = [];
     const conditions = [];
 
-    // Branch filter (non-admin sees own branch only)
+    // Branch filter
+    // - غير admin: فرعه دائماً
+    // - admin اختار فرعاً (P-02 يضع branch_id): فلتر بذلك الفرع
+    // - admin اختار "كل الفروع" (branch_id = null أو branch_id الأصلي): لا فلتر
     if (req.user.role !== 'admin') {
       params.push(req.user.branch_id);
       conditions.push(`o.branch_id = $${params.length}`);
+    } else if (req.headers['x-branch-id']) {
+      // مدير اختار فرعاً محدداً — P-02 وضع branch_id الصحيح في req.user
+      params.push(req.user.branch_id);
+      conditions.push(`o.branch_id = $${params.length}`);
     }
+    // admin بدون x-branch-id = كل الفروع — لا فلتر
 
     // Technician sees only their own orders
     if (req.user.role === 'technician') {
@@ -26,11 +34,11 @@ const getOrders = async (req, res, next) => {
       conditions.push(`o.technician_id = $${params.length}`);
     }
 
-    if (status) { params.push(status); conditions.push(`o.status = $${params.length}`); }
-    if (priority) { params.push(priority); conditions.push(`o.priority = $${params.length}`); }
-    if (technician_id) { params.push(technician_id); conditions.push(`o.technician_id = $${params.length}`); }
-    if (date_from) { params.push(date_from); conditions.push(`o.received_at >= $${params.length}`); }
-    if (date_to) { params.push(date_to); conditions.push(`o.received_at <= $${params.length}`); }
+    if (status)       { params.push(status);        conditions.push(`o.status = $${params.length}`); }
+    if (priority)     { params.push(priority);       conditions.push(`o.priority = $${params.length}`); }
+    if (technician_id){ params.push(technician_id);  conditions.push(`o.technician_id = $${params.length}`); }
+    if (date_from)    { params.push(date_from);      conditions.push(`o.received_at >= $${params.length}`); }
+    if (date_to)      { params.push(date_to);        conditions.push(`o.received_at <= $${params.length}`); }
 
     if (search) {
       params.push(`%${search}%`);
@@ -91,8 +99,9 @@ const getOrderById = async (req, res, next) => {
        JOIN devices d ON d.id = o.device_id
        LEFT JOIN users u ON u.id = o.technician_id
        LEFT JOIN users cb ON cb.id = o.created_by
-       WHERE o.id = $1`,
-      [req.params.id]
+       WHERE o.id = $1
+         AND ($2::uuid IS NULL OR o.branch_id = $2)`,
+      [req.params.id, req.user.role === 'admin' && !req.headers['x-branch-id'] ? null : req.user.branch_id]
     );
 
     if (!rows.length) throw new AppError('الأوردر غير موجود', 404);
@@ -172,33 +181,40 @@ const updateStatus = async (req, res, next) => {
     if (!validStatuses.includes(status))
       throw new AppError('حالة غير صالحة');
 
-    // Technician can only update their assigned orders
-    if (req.user.role === 'technician') {
-      const { rows } = await query('SELECT technician_id FROM orders WHERE id = $1', [req.params.id]);
-      if (!rows.length || rows[0].technician_id !== req.user.id)
-        throw new AppError('لا يمكنك تعديل هذا الأوردر', 403);
+    // جلب الأوردر أولاً — للتحقق من الفرع وحفظ old_status
+    const { rows: current } = await query(
+      'SELECT id, status, technician_id, branch_id FROM orders WHERE id = $1',
+      [req.params.id]
+    );
+    if (!current.length) throw new AppError('الأوردر غير موجود', 404);
+
+    // Branch isolation — كل الأدوار ما عدا admin بدون فلتر
+    if (req.user.role !== 'admin' || req.headers['x-branch-id']) {
+      if (current[0].branch_id !== req.user.branch_id)
+        throw new AppError('ليس لديك صلاحية لتعديل هذا الأوردر', 403);
     }
 
-    const updates = { status };
-    if (status === 'delivered') updates.delivered_at = 'NOW()';
-    if (status === 'ready') updates.completed_at = 'NOW()';
+    // Technician يعدّل تذاكره فقط
+    if (req.user.role === 'technician' && current[0].technician_id !== req.user.id)
+      throw new AppError('لا يمكنك تعديل هذا الأوردر', 403);
+
+    const oldStatus = current[0].status; // القيمة الصحيحة قبل التحديث
 
     const { rows } = await query(
       `UPDATE orders SET status = $1,
-        completed_at = CASE WHEN $1 = 'ready' THEN NOW() ELSE completed_at END,
+        completed_at = CASE WHEN $1 = 'ready'     THEN NOW() ELSE completed_at END,
         delivered_at = CASE WHEN $1 = 'delivered' THEN NOW() ELSE delivered_at END
        WHERE id = $2 RETURNING *`,
       [status, req.params.id]
     );
 
-    if (!rows.length) throw new AppError('الأوردر غير موجود', 404);
-
-    // Log the change (trigger handles it, but we add note here if any)
+    // تسجيل الملاحظة مع changed_by (الـ trigger يسجل تلقائياً بدون note وبدون changed_by)
+    // هنا نسجل نسخة إضافية فقط إذا كان هناك note — بـ old_status الصحيح
     if (note) {
       await query(
         `INSERT INTO order_status_log (order_id, changed_by, old_status, new_status, note)
          VALUES ($1, $2, $3, $4, $5)`,
-        [req.params.id, req.user.id, rows[0].status, status, note]
+        [req.params.id, req.user.id, oldStatus, status, note]
       );
     }
 
@@ -210,11 +226,24 @@ const updateStatus = async (req, res, next) => {
 const assignTechnician = async (req, res, next) => {
   try {
     const { technician_id } = req.body;
+
+    // Branch isolation
+    const { rows: current } = await query(
+      'SELECT branch_id FROM orders WHERE id = $1',
+      [req.params.id]
+    );
+    if (!current.length) throw new AppError('الأوردر غير موجود', 404);
+
+    if (req.user.role !== 'admin' || req.headers['x-branch-id']) {
+      if (current[0].branch_id !== req.user.branch_id)
+        throw new AppError('ليس لديك صلاحية لتعديل هذا الأوردر', 403);
+    }
+
     const { rows } = await query(
       'UPDATE orders SET technician_id = $1 WHERE id = $2 RETURNING *',
       [technician_id, req.params.id]
     );
-    if (!rows.length) throw new AppError('الأوردر غير موجود', 404);
+
     res.json({ success: true, message: 'تم إسناد الأوردر للفني', data: rows[0] });
   } catch (err) { next(err); }
 };
@@ -226,11 +255,30 @@ const addPart = async (req, res, next) => {
     await client.query('BEGIN');
     const { part_id, quantity, unit_price } = req.body;
 
-    // Check stock
+    // Branch isolation — تحقق أن الأوردر من نفس الفرع
+    const { rows: order } = await client.query(
+      'SELECT branch_id FROM orders WHERE id = $1',
+      [req.params.id]
+    );
+    if (!order.length) throw new AppError('الأوردر غير موجود', 404);
+
+    if (req.user.role !== 'admin' || req.headers['x-branch-id']) {
+      if (order[0].branch_id !== req.user.branch_id)
+        throw new AppError('ليس لديك صلاحية لتعديل هذا الأوردر', 403);
+    }
+
+    // تحقق أن القطعة من نفس الفرع
     const { rows: stock } = await client.query(
-      'SELECT quantity, sell_price FROM parts WHERE id = $1 FOR UPDATE', [part_id]
+      'SELECT quantity, sell_price, branch_id FROM parts WHERE id = $1 FOR UPDATE',
+      [part_id]
     );
     if (!stock.length) throw new AppError('القطعة غير موجودة', 404);
+
+    if (req.user.role !== 'admin' || req.headers['x-branch-id']) {
+      if (stock[0].branch_id !== req.user.branch_id)
+        throw new AppError('هذه القطعة لا تنتمي لفرعك', 403);
+    }
+
     if (stock[0].quantity < quantity)
       throw new AppError(`الكمية المتاحة ${stock[0].quantity} فقط`);
 
