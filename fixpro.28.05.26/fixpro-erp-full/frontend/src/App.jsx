@@ -48,10 +48,14 @@ import PrinterSettings from './pages/PrinterSettings'
 import WhatsAppSettings from './pages/WhatsAppSettings'
 import AppointmentsPage from './pages/Appointments'
 import ServicePricesPage from './pages/ServicePrices'
-import DevicesPage    from './pages/Devices'
+import DevicesPage       from './pages/Devices'
+import QuotationsPage    from './pages/Quotations'
+import PurchaseOrdersPage from './pages/PurchaseOrders'
+import WorkshopBoardPage  from './pages/WorkshopBoard'
+import ReportsPage        from './pages/Reports'
 import BranchSelector from './components/BranchSelector'
 import NotificationCenter from './components/NotificationCenter'
-import { CustomersPage, InventoryPage, ReportsPage, SuppliersPage, DefectivePage } from './pages/other'
+import { CustomersPage, InventoryPage, SuppliersPage, DefectivePage } from './pages/other'
 
 function ProtectedLayout() {
   const { user } = useAuth()
@@ -105,10 +109,13 @@ function ProtectedLayout() {
             <Route path="/"               element={<Dashboard />} />
             <Route path="/tickets"        element={<TicketsPage />} />
             <Route path="/devices"        element={<DevicesPage />} />
+            <Route path="/workshop"       element={<WorkshopBoardPage />} />
             <Route path="/customers"      element={<CustomersPage />} />
             <Route path="/inventory"      element={<RoleRoute element={<InventoryPage />}    roles={['admin','branch_manager','warehouse']} />} />
             <Route path="/invoices"       element={<RoleRoute element={<InvoicesPage />}     roles={['admin','branch_manager','receptionist','accountant']} />} />
             <Route path="/reports"        element={<RoleRoute element={<ReportsPage />}      roles={['admin','branch_manager','accountant']} />} />
+            <Route path="/quotations"      element={<RoleRoute element={<QuotationsPage />}   roles={['admin','branch_manager','receptionist']} />} />
+            <Route path="/purchase-orders" element={<RoleRoute element={<PurchaseOrdersPage/>} roles={['admin','branch_manager','warehouse','accountant']} />} />
             <Route path="/technicians"    element={<RoleRoute element={<TechniciansPage />}  roles={['admin','branch_manager']} />} />
             <Route path="/notifications"  element={<NotificationsPage />} />
             <Route path="/print"          element={<PrintCenter />} />

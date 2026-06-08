@@ -3,7 +3,8 @@ import { useAuth } from '../context/AuthContext'
 import {
   LayoutDashboard, Wrench, Users, UserCheck, Package,
   Receipt, BarChart2, Bell, Settings, LogOut,
-  Printer, Building, Sliders, Globe, MessageCircle, CalendarDays, Tags, Monitor, Truck, AlertTriangle
+  Printer, Building, Sliders, Globe, MessageCircle, CalendarDays, Tags, Monitor, Truck, AlertTriangle,
+  FileText, ShoppingCart, Kanban, Star
 } from 'lucide-react'
 import { useT } from '../utils/i18n'
 import { useLang } from '../context/LangContext'
@@ -13,6 +14,7 @@ const NAV = [
     { to:'/',              icon:LayoutDashboard, key:'dashboard',       roles:null },
     { to:'/tickets',       icon:Wrench,          key:'tickets',         roles:null },
     { to:'/devices',       icon:Monitor,         key:'devices',         roles:null },
+    { to:'/workshop',      icon:Kanban,          key:'workshopBoard',   roles:['admin','branch_manager','technician','receptionist'] },
   ]},
   { section_ar:'الإدارة', section_en:'Management', items:[
     { to:'/customers',     icon:Users,      key:'customers',     roles:['admin','branch_manager','receptionist','customer_service'] },
@@ -20,10 +22,12 @@ const NAV = [
     { to:'/inventory',     icon:Package,    key:'inventory',     roles:['admin','branch_manager','warehouse'] },
     { to:'/suppliers',     icon:Truck,          key:'suppliers',     roles:['admin','branch_manager','warehouse','accountant'] },
     { to:'/defective',     icon:AlertTriangle,  key:'defective',     roles:['admin','branch_manager','warehouse'] },
+    { to:'/purchase-orders', icon:ShoppingCart,   key:'purchaseOrders', roles:['admin','branch_manager','warehouse','accountant'] },
     { to:'/service-prices', icon:Tags,       key:'servicePrices', roles:['admin','branch_manager'] },
   ]},
   { section_ar:'المالية', section_en:'Finance', items:[
     { to:'/invoices',      icon:Receipt,    key:'invoices',      roles:['admin','branch_manager','accountant','receptionist'] },
+    { to:'/quotations',    icon:FileText,   key:'quotations',    roles:['admin','branch_manager','receptionist'] },
     { to:'/reports',       icon:BarChart2,  key:'reports',       roles:['admin','branch_manager','accountant'] },
   ]},
   { section_ar:'النظام', section_en:'System', items:[

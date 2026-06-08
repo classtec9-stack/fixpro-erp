@@ -1,0 +1,10 @@
+const router = require('express').Router();
+const c = require('../controllers/purchaseOrders.controller');
+const { authenticate, authorize } = require('../middleware/auth.middleware');
+router.use(authenticate);
+router.get('/',                authorize('admin','branch_manager','warehouse','accountant'), c.getPurchaseOrders);
+router.post('/',               authorize('admin','branch_manager','warehouse'), c.createPurchaseOrder);
+router.get('/:id',             authorize('admin','branch_manager','warehouse','accountant'), c.getPurchaseOrderById);
+router.post('/:id/receive',    authorize('admin','branch_manager','warehouse'), c.receivePurchaseOrder);
+router.patch('/:id/cancel',    authorize('admin','branch_manager'), c.cancelPurchaseOrder);
+module.exports = router;

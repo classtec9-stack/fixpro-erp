@@ -298,4 +298,48 @@ const addPart = async (req, res, next) => {
   } finally { client.release(); }
 };
 
-module.exports = { getOrders, getOrderById, createOrder, updateStatus, assignTechnician, addPart };
+// GET /api/orders/:id/parts — جلب قطع الأوردر
+const getOrderParts = async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT op.*, p.name as part_name, p.sku, p.barcode
+       FROM order_parts op
+       JOIN parts p ON p.id = op.part_id
+       WHERE op.order_id = $1`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/orders/:id/parts/:partId — حذف قطعة من الأوردر
+const removePart = async (req, res, next) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    // تحقق من وجود القطعة وأنها تابعة لهذا الأوردر
+    const { rows: op } = await client.query(
+      'SELECT op.*, o.branch_id FROM order_parts op JOIN orders o ON o.id = op.order_id WHERE op.id = $1 AND op.order_id = $2',
+      [req.params.partId, req.params.id]
+    );
+    if (!op.length) throw new AppError('القطعة غير موجودة في هذا الأوردر', 404);
+
+    // branch isolation
+    if (req.user.role !== 'admin' || req.headers['x-branch-id']) {
+      if (op[0].branch_id !== req.user.branch_id)
+        throw new AppError('ليس لديك صلاحية لتعديل هذا الأوردر', 403);
+    }
+
+    // الحذف — الـ trigger يعيد الكمية للمخزون تلقائياً
+    await client.query('DELETE FROM order_parts WHERE id = $1', [req.params.partId]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'تم حذف القطعة وإعادة الكمية للمخزون' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally { client.release(); }
+};
+
+module.exports = { getOrders, getOrderById, createOrder, updateStatus, assignTechnician, addPart, getOrderParts, removePart };

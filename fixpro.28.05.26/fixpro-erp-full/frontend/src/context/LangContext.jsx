@@ -24,6 +24,12 @@ export const TR = {
   appointments:    { ar: 'الحجوزات',              en: 'Appointments' },
   servicePrices:   { ar: 'تسعير الخدمات',         en: 'Service Pricing' },
   devices:         { ar: 'لوحة الأجهزة',           en: 'Devices Board' },
+
+  quotations:    { ar: 'عروض الأسعار',      en: 'Quotations' },
+  purchaseOrders:{ ar: 'أوامر الشراء',       en: 'Purchase Orders' },
+  workshopBoard: { ar: 'لوحة الورشة',        en: 'Workshop Board' },
+  sla:           { ar: 'مستوى الخدمة',       en: 'SLA' },
+  loyalty:       { ar: 'نقاط الولاء',        en: 'Loyalty Points' },
   logout:        { ar: 'تسجيل الخروج',          en: 'Logout' },
 
   // أزرار عامة
@@ -155,3 +161,4 @@ export function useT() {
   const { t, lang, isAr, isEn } = useLang()
   return { t, lang, isAr, isEn }
 }
+// NOTE: append these keys to TR object manually or use spread
