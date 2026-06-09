@@ -55,7 +55,9 @@ import WorkshopBoardPage  from './pages/WorkshopBoard'
 import ReportsPage        from './pages/Reports'
 import BranchSelector from './components/BranchSelector'
 import NotificationCenter from './components/NotificationCenter'
-import { CustomersPage, InventoryPage, SuppliersPage, DefectivePage } from './pages/other'
+import { CustomersPage, SuppliersPage } from './pages/other'
+import InventoryPage   from './pages/Inventory'
+import DefectivePage   from './pages/Defective'
 
 function ProtectedLayout() {
   const { user } = useAuth()
@@ -122,7 +124,7 @@ function ProtectedLayout() {
             <Route path="/shop-settings"  element={<RoleRoute element={<ShopSettings />}     roles={['admin','branch_manager']} />} />
             <Route path="/settings"       element={<SettingsPage />} />
             <Route path="/printer-settings" element={<RoleRoute element={<PrinterSettings />} roles={['admin','branch_manager']} />} />
-            <Route path="/branches"       element={<RoleRoute element={<BranchesAdmin />}    roles={['admin']} />} />
+            <Route path="/branches"       element={<RoleRoute element={<BranchesPage />}     roles={['admin']} />} />
             <Route path="/whatsapp"       element={<RoleRoute element={<WhatsAppSettings />} roles={['admin','branch_manager']} />} />
             <Route path="/appointments"   element={<AppointmentsPage />} />
             <Route path="/service-prices" element={<RoleRoute element={<ServicePricesPage />} roles={['admin','branch_manager']} />} />

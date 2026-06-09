@@ -1,6 +1,5 @@
-const { body, param, query, validationResult } = require('express-validator');
+const { body, param, validationResult } = require('express-validator');
 
-// ── مساعد: تحقق من الأخطاء وأوقف الطلب إذا وُجدت ─────────
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -13,207 +12,173 @@ const validate = (req, res, next) => {
   next();
 };
 
+// ── الهاتف السعودي — regex موسّع يقبل كل الصيغ الشائعة ──────
+const PHONE_REGEX = /^[+0-9\s\-().]{7,25}$/;
+
 // ── تسجيل الدخول ──────────────────────────────────────────
 const validateLogin = [
-  body('email')
-    .trim().notEmpty().withMessage('البريد الإلكتروني مطلوب')
+  body('email').trim().notEmpty().withMessage('البريد الإلكتروني مطلوب')
     .isEmail().withMessage('البريد الإلكتروني غير صحيح')
-    .normalizeEmail()
-    .isLength({ max: 150 }).withMessage('البريد طويل جداً'),
-  body('password')
-    .notEmpty().withMessage('كلمة المرور مطلوبة')
-    .isLength({ min: 6, max: 100 }).withMessage('كلمة المرور يجب أن تكون بين 6 و 100 حرف'),
-  validate
+    .normalizeEmail().isLength({ max: 150 }),
+  body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+    .isLength({ min: 6, max: 100 }),
+  validate,
 ];
 
 // ── إنشاء تذكرة صيانة ─────────────────────────────────────
+const VALID_STATUSES = [
+  'new','quick_check','diagnosing','waiting_approval',
+  'in_repair','waiting_part','part_transferred',
+  'awaiting_technician_rejection','ready','delivered','rejected','cancelled'
+];
+
 const validateCreateTicket = [
-  body('customer_name')
-    .trim().notEmpty().withMessage('اسم العميل مطلوب')
-    .isLength({ min: 2, max: 100 }).withMessage('الاسم بين 2 و 100 حرف')
-    .escape(),
-  body('customer_phone')
-    .trim().notEmpty().withMessage('رقم الجوال مطلوب')
-    .matches(/^[+0-9\s\-()]{7,20}$/).withMessage('رقم الجوال غير صحيح'),
-  body('device_brand')
-    .trim().notEmpty().withMessage('ماركة الجهاز مطلوبة')
+  body('customer_name').trim().notEmpty().withMessage('اسم العميل مطلوب')
+    .isLength({ min: 2, max: 100 }).escape(),
+  body('customer_phone').trim().notEmpty().withMessage('رقم الجوال مطلوب')
+    .matches(PHONE_REGEX).withMessage('رقم الجوال غير صحيح'),
+  body('device_brand').trim().notEmpty().withMessage('ماركة الجهاز مطلوبة')
     .isLength({ max: 50 }).escape(),
-  body('device_model')
-    .trim().notEmpty().withMessage('موديل الجهاز مطلوب')
+  body('device_model').trim().notEmpty().withMessage('موديل الجهاز مطلوب')
     .isLength({ max: 80 }).escape(),
-  body('problem_desc')
-    .trim().notEmpty().withMessage('وصف المشكلة مطلوب')
-    .isLength({ min: 3, max: 1000 }).withMessage('الوصف بين 3 و 1000 حرف')
-    .escape(),
-  body('priority')
-    .optional()
-    .isIn(['normal', 'urgent', 'vip']).withMessage('الأولوية يجب أن تكون: normal أو urgent أو vip'),
-  body('device_imei')
-    .optional()
-    .trim()
-    .isLength({ max: 20 })
-    .matches(/^[0-9A-Za-z\-]*$/).withMessage('IMEI يحتوي على أحرف غير مسموح بها'),
-  body('estimated_cost')
-    .optional()
-    .isNumeric().withMessage('التكلفة التقديرية يجب أن تكون رقماً')
-    .isFloat({ min: 0, max: 99999 }).withMessage('التكلفة خارج النطاق المسموح'),
-  validate
+  body('problem_desc').trim().notEmpty().withMessage('وصف المشكلة مطلوب')
+    .isLength({ min: 3, max: 1000 }).escape(),
+  body('priority').optional()
+    .isIn(['normal','urgent','vip']).withMessage('الأولوية غير صحيحة'),
+  body('device_imei').optional().trim().isLength({ max: 20 })
+    .matches(/^[0-9A-Za-z\-]*$/).withMessage('IMEI غير صحيح'),
+  body('estimated_cost').optional()
+    .isFloat({ min: 0, max: 99999 }).withMessage('التكلفة التقديرية غير صحيحة'),
+  validate,
 ];
 
 // ── تحديث حالة التذكرة ────────────────────────────────────
-const VALID_STATUSES = [
-  'new', 'quick_check', 'diagnosing', 'waiting_approval',
-  'in_repair', 'waiting_part', 'ready', 'delivered', 'rejected', 'cancelled'
-];
-
 const validateStatusUpdate = [
   param('id').isUUID().withMessage('معرّف التذكرة غير صحيح'),
-  body('status')
-    .notEmpty().withMessage('الحالة الجديدة مطلوبة')
-    .isIn(VALID_STATUSES).withMessage(`الحالة يجب أن تكون: ${VALID_STATUSES.join(', ')}`),
-  body('note')
-    .optional().trim()
-    .isLength({ max: 500 }).escape(),
-  body('rejection_reason')
-    .optional().trim()
-    .isLength({ max: 500 }).escape(),
-  validate
+  body('status').notEmpty().withMessage('الحالة الجديدة مطلوبة')
+    .isIn(VALID_STATUSES).withMessage(`الحالة غير صحيحة`),
+  body('note').optional().trim().isLength({ max: 500 }).escape(),
+  body('rejection_reason').optional().trim().isLength({ max: 500 }).escape(),
+  validate,
 ];
 
 // ── إنشاء فاتورة ──────────────────────────────────────────
 const validateCreateInvoice = [
-  body('order_id')
-    .notEmpty().withMessage('رقم التذكرة مطلوب')
+  body('order_id').notEmpty().withMessage('رقم التذكرة مطلوب')
     .isUUID().withMessage('رقم التذكرة غير صحيح'),
-  body('labor_cost')
-    .optional()
-    .isFloat({ min: 0, max: 99999 }).withMessage('أجرة العمالة خارج النطاق'),
-  body('discount')
-    .optional()
-    .isFloat({ min: 0, max: 99999 }).withMessage('الخصم خارج النطاق'),
-  validate
+  body('labor_cost').optional().isFloat({ min: 0, max: 99999 }),
+  body('discount').optional().isFloat({ min: 0, max: 99999 }),
+  validate,
 ];
 
 // ── تسجيل دفعة ────────────────────────────────────────────
 const validatePayment = [
   param('id').isUUID().withMessage('معرّف الفاتورة غير صحيح'),
-  body('amount')
-    .notEmpty().withMessage('المبلغ مطلوب')
+  body('amount').notEmpty().withMessage('المبلغ مطلوب')
     .isFloat({ min: 0.01, max: 999999 }).withMessage('المبلغ غير صحيح'),
-  body('method')
-    .notEmpty().withMessage('طريقة الدفع مطلوبة')
-    .isIn(['cash', 'card', 'transfer', 'stc', 'other']).withMessage('طريقة الدفع غير صحيحة'),
-  body('reference_no')
-    .optional().trim()
-    .isLength({ max: 100 }).escape(),
-  validate
+  body('method').notEmpty().withMessage('طريقة الدفع مطلوبة')
+    .isIn(['cash','card','bank_transfer','mada','stc_pay','apple_pay','refund','other'])
+    .withMessage('طريقة الدفع غير صحيحة'),
+  body('reference_no').optional().trim().isLength({ max: 100 }),
+  validate,
 ];
 
 // ── إنشاء مستخدم ──────────────────────────────────────────
-const VALID_ROLES = ['admin','branch_manager','receptionist','technician','customer_service','warehouse','accountant'];
+const VALID_ROLES = [
+  'admin','branch_manager','receptionist','technician',
+  'customer_service','warehouse','accountant'
+];
 
 const validateCreateUser = [
-  body('full_name')
-    .trim().notEmpty().withMessage('الاسم مطلوب')
-    .isLength({ min: 2, max: 100 }).withMessage('الاسم بين 2 و 100 حرف')
-    .escape(),
-  body('email')
-    .trim().notEmpty().withMessage('البريد الإلكتروني مطلوب')
+  body('full_name').trim().notEmpty().withMessage('الاسم مطلوب')
+    .isLength({ min: 2, max: 100 }).escape(),
+  body('email').trim().notEmpty().withMessage('البريد الإلكتروني مطلوب')
     .isEmail().withMessage('البريد الإلكتروني غير صحيح')
-    .normalizeEmail()
-    .isLength({ max: 150 }),
-  body('password')
-    .notEmpty().withMessage('كلمة المرور مطلوبة')
+    .normalizeEmail().isLength({ max: 150 }),
+  body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
     .isLength({ min: 8, max: 100 }).withMessage('كلمة المرور يجب أن تكون 8 أحرف على الأقل')
-    .matches(/^(?=.*[a-zA-Z])(?=.*\d)/)
-    .withMessage('كلمة المرور يجب أن تحتوي على أحرف وأرقام'),
-  body('role')
-    .notEmpty().withMessage('الدور مطلوب')
+    .matches(/^(?=.*[a-zA-Z])(?=.*\d)/).withMessage('كلمة المرور يجب أن تحتوي على أحرف وأرقام'),
+  body('role').notEmpty().withMessage('الدور مطلوب')
     .isIn(VALID_ROLES).withMessage('الدور غير صحيح'),
-  body('phone')
-    .optional().trim()
-    .matches(/^[+0-9\s\-()]{7,20}$/).withMessage('رقم الجوال غير صحيح'),
-  validate
+  body('phone').optional().trim().matches(PHONE_REGEX).withMessage('رقم الجوال غير صحيح'),
+  validate,
 ];
 
 // ── تغيير كلمة المرور ─────────────────────────────────────
 const validateChangePassword = [
-  body('current_password')
-    .notEmpty().withMessage('كلمة المرور الحالية مطلوبة'),
-  body('new_password')
-    .notEmpty().withMessage('كلمة المرور الجديدة مطلوبة')
-    .isLength({ min: 8, max: 100 }).withMessage('كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل')
-    .matches(/^(?=.*[a-zA-Z])(?=.*\d)/)
-    .withMessage('كلمة المرور يجب أن تحتوي على أحرف وأرقام'),
-  validate
+  body('current_password').notEmpty().withMessage('كلمة المرور الحالية مطلوبة'),
+  body('new_password').notEmpty().withMessage('كلمة المرور الجديدة مطلوبة')
+    .isLength({ min: 8, max: 100 })
+    .matches(/^(?=.*[a-zA-Z])(?=.*\d)/).withMessage('كلمة المرور يجب أن تحتوي على أحرف وأرقام'),
+  validate,
 ];
 
 // ── إنشاء فرع ─────────────────────────────────────────────
 const validateCreateBranch = [
-  body('name')
-    .trim().notEmpty().withMessage('اسم الفرع مطلوب')
-    .isLength({ min: 2, max: 100 }).withMessage('الاسم بين 2 و 100 حرف')
-    .escape(),
-  body('city')
-    .optional().trim().isLength({ max: 50 }).escape(),
-  body('phone')
-    .optional().trim()
-    .matches(/^[+0-9\s\-()]{7,20}$/).withMessage('رقم الهاتف غير صحيح'),
-  body('address')
-    .optional().trim().isLength({ max: 200 }).escape(),
-  validate
+  body('name').trim().notEmpty().withMessage('اسم الفرع مطلوب')
+    .isLength({ min: 2, max: 100 }).escape(),
+  body('city').optional().trim().isLength({ max: 50 }).escape(),
+  body('phone').optional().trim().matches(PHONE_REGEX).withMessage('رقم الهاتف غير صحيح'),
+  body('address').optional().trim().isLength({ max: 200 }).escape(),
+  validate,
 ];
 
 // ── إضافة قطعة للمخزون ────────────────────────────────────
 const validateCreatePart = [
-  body('name')
-    .trim().notEmpty().withMessage('اسم القطعة مطلوب')
+  body('name').trim().notEmpty().withMessage('اسم القطعة مطلوب')
     .isLength({ min: 2, max: 150 }).escape(),
-  body('sell_price')
-    .notEmpty().withMessage('سعر البيع مطلوب')
+  body('sell_price').notEmpty().withMessage('سعر البيع مطلوب')
     .isFloat({ min: 0, max: 99999 }).withMessage('السعر غير صحيح'),
-  body('quantity')
-    .optional()
-    .isInt({ min: 0, max: 99999 }).withMessage('الكمية يجب أن تكون رقماً صحيحاً'),
-  body('sku')
-    .optional().trim()
-    .isLength({ max: 50 })
+  body('quantity').optional().isInt({ min: 0, max: 99999 }),
+  body('sku').optional().trim().isLength({ max: 50 })
     .matches(/^[A-Za-z0-9\-_]*$/).withMessage('SKU يحتوي على أحرف غير مسموح بها'),
-  validate
+  validate,
 ];
 
 // ── إعدادات المحل ─────────────────────────────────────────
+// تم توسيع الـ validation لقبول كل الصيغ الشائعة
 const validateShopSettings = [
-  body('shop_name')
-    .optional().trim().isLength({ max: 150 }).escape(),
-  body('phone')
-    .optional().trim()
-    .matches(/^[+0-9\s\-()]{7,20}$/).withMessage('رقم الهاتف غير صحيح'),
-  body('email')
-    .optional().trim()
-    .isEmail().withMessage('البريد الإلكتروني غير صحيح')
-    .normalizeEmail(),
-  body('tax_number')
-    .optional().trim()
-    .isLength({ max: 50 })
-    .matches(/^[A-Za-z0-9]*$/).withMessage('الرقم الضريبي غير صحيح'),
-  body('receipt_width')
-    .optional()
-    .isIn([58, 80]).withMessage('عرض الوصل يجب أن يكون 58 أو 80'),
-  validate
+  body('shop_name').optional().trim().isLength({ max: 150 }),
+  // هاتف — يقبل كل الأرقام بما فيها الفراغات والشرطات
+  body('phone').optional().trim()
+    .custom(val => {
+      if (!val || val.trim() === '') return true; // فارغ = مقبول
+      return PHONE_REGEX.test(val.trim());
+    }).withMessage('رقم الهاتف غير صحيح'),
+  body('phone2').optional().trim()
+    .custom(val => {
+      if (!val || val.trim() === '') return true;
+      return PHONE_REGEX.test(val.trim());
+    }).withMessage('رقم الهاتف الثانوي غير صحيح'),
+  // إيميل — اختياري تماماً
+  body('email').optional().trim()
+    .custom(val => {
+      if (!val || val.trim() === '') return true;
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
+    }).withMessage('البريد الإلكتروني غير صحيح'),
+  // الرقم الضريبي السعودي — 15 رقم يبدأ بـ 3
+  body('tax_number').optional().trim()
+    .custom(val => {
+      if (!val || val.trim() === '') return true;
+      return /^[A-Za-z0-9\-]{1,50}$/.test(val.trim());
+    }).withMessage('الرقم الضريبي يحتوي على رموز غير مسموح بها'),
+  // عرض الوصل — يقبل أي رقم بين 40 و 120
+  body('receipt_width').optional()
+    .isInt({ min: 40, max: 120 }).withMessage('عرض الوصل يجب أن يكون بين 40 و 120'),
+  body('label_width').optional().isInt({ min: 20, max: 200 }),
+  body('label_height').optional().isInt({ min: 10, max: 100 }),
+  validate,
 ];
 
 // ── رفع الشعار ────────────────────────────────────────────
 const validateLogoUpload = [
-  body('logo_base64')
-    .notEmpty().withMessage('ملف الشعار مطلوب')
+  body('logo_base64').notEmpty().withMessage('ملف الشعار مطلوب')
     .isBase64().withMessage('تنسيق الصورة غير صحيح')
     .isLength({ max: 700000 }).withMessage('حجم الشعار كبير جداً — الحد الأقصى 500KB'),
-  body('mime_type')
-    .notEmpty().withMessage('نوع الملف مطلوب')
-    .isIn(['image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
-    .withMessage('نوع الملف غير مدعوم — المسموح: JPEG, PNG, WebP فقط'),
-  validate
+  body('mime_type').notEmpty().withMessage('نوع الملف مطلوب')
+    .isIn(['image/jpeg','image/jpg','image/png','image/webp'])
+    .withMessage('نوع الملف غير مدعوم'),
+  validate,
 ];
 
 module.exports = {

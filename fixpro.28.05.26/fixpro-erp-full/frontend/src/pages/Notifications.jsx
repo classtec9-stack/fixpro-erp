@@ -15,6 +15,9 @@ const NOTIF_CONFIG = {
   status_change:    { icon: Wrench,  color: '#10B981', bg: 'rgba(16,185,129,.12)',  label: 'تحديث حالة' },
   part_transfer:    { icon: Package, color: '#F97316', bg: 'rgba(249,115,22,.12)',  label: 'تحويل قطعة' },
   general:          { icon: Bell,    color: '#8B5CF6', bg: 'rgba(139,92,246,.12)', label: 'إشعار' },
+  device_ready:     { icon: CheckCircle, color: '#10B981', bg: 'rgba(16,185,129,.12)',  label: 'جهاز جاهز' },
+  low_stock:        { icon: AlertTriangle, color: '#EF4444', bg: 'rgba(239,68,68,.12)', label: 'مخزون منخفض' },
+  sla_breach:       { icon: Clock,      color: '#EF4444', bg: 'rgba(239,68,68,.12)',   label: 'تجاوز SLA' },
 }
 
 const PRIORITY_CONFIG = {
@@ -357,13 +360,16 @@ function NotifActionModal({ notif, onClose, onDone }) {
           {notif.type === 'part_request' && (
             <PartRequestActions ticket={t} onDone={onDone} claimFirst={tryClaimFirst} claiming={claiming} />
           )}
-          {notif.type === 'status_change' && (
+          {(notif.type === 'device_ready' || (notif.type === 'status_change' && t?.status === 'ready')) && (
+            <DeviceReadyWhatsApp ticket={t} notif={notif} onDone={onDone} claimFirst={tryClaimFirst} claiming={claiming} />
+          )}
+          {notif.type === 'status_change' && t?.status !== 'ready' && (
             <div style={{ display:'flex', gap:8, marginTop:4 }}>
               <StatusChangeButton ticket={t} onSuccess={onDone} />
               <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
             </div>
           )}
-          {!['customer_review','part_request','status_change'].includes(notif.type) && (
+          {!['customer_review','part_request','status_change','device_ready'].includes(notif.type) && (
             <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
           )}
         </div>
@@ -680,6 +686,60 @@ function PartRequestActions({ ticket, onDone, claimFirst, claiming }) {
           {transfer.isPending ? '⏳ جاري التحويل...' : '📦 تحويل وخصم من المخزون'}
         </button>
         <button className="btn btn-ghost" onClick={onDone}>إغلاق</button>
+      </div>
+    </div>
+  )
+}
+
+// ── إرسال واتساب لجهاز جاهز ────────────────────────────
+function DeviceReadyWhatsApp({ ticket, notif, onDone, claimFirst, claiming }) {
+  const [msg, setMsg] = React.useState('')
+  const [sent, setSent] = React.useState(false)
+
+  const defaultMsg = ticket
+    ? `مرحباً ${ticket.customer_name} 👋\n\nجهازك جاهز للاستلام ✅\n📱 ${ticket.brand} ${ticket.model}\n🔖 رقم التذكرة: ${ticket.order_number}\n\nيسعدنا خدمتكم 🙏`
+    : ''
+
+  const send = async () => {
+    const ok = await claimFirst('تم إرسال واتساب للعميل')
+    if (!ok) return
+    const phone = ticket.customer_phone?.replace(/[^0-9]/g,'').replace(/^0/,'')
+    window.open(`https://wa.me/966${phone}?text=${encodeURIComponent(msg || defaultMsg)}`, '_blank')
+    setSent(true)
+    setTimeout(onDone, 1500)
+  }
+
+  if (sent) return (
+    <div style={{ textAlign:'center', padding:16 }}>
+      <div style={{ fontSize:32, marginBottom:8 }}>✅</div>
+      <div style={{ color:'var(--green)', fontWeight:600 }}>تم إرسال الرسالة للعميل</div>
+    </div>
+  )
+
+  return (
+    <div>
+      <div style={{ fontWeight:600, color:'var(--text-2)', marginBottom:10, fontSize:13 }}>
+        📱 إرسال إشعار للعميل عبر واتساب
+      </div>
+      <div style={{ fontSize:12, color:'var(--muted)', marginBottom:8 }}>
+        {ticket?.customer_name} — {ticket?.customer_phone}
+      </div>
+      <textarea
+        className="form-input" rows={4}
+        value={msg || defaultMsg}
+        onChange={e => setMsg(e.target.value)}
+        style={{ marginBottom:10, direction:'rtl', fontSize:12 }}
+      />
+      <div style={{ display:'flex', gap:8 }}>
+        <button
+          style={{ flex:1, padding:'9px', background:'#25D366', color:'#fff', border:'none',
+            borderRadius:6, cursor:'pointer', fontFamily:'var(--font)', fontSize:13, fontWeight:600,
+            display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+            opacity: claiming ? 0.6 : 1 }}
+          disabled={claiming} onClick={send}>
+          📱 إرسال واتساب
+        </button>
+        <button className="btn btn-ghost" onClick={onDone}>لاحقاً</button>
       </div>
     </div>
   )

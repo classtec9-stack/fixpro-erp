@@ -30,6 +30,12 @@ export const TR = {
   workshopBoard: { ar: 'لوحة الورشة',        en: 'Workshop Board' },
   sla:           { ar: 'مستوى الخدمة',       en: 'SLA' },
   loyalty:       { ar: 'نقاط الولاء',        en: 'Loyalty Points' },
+
+  transfers:     { ar: 'تحويل بين الفروع',  en: 'Branch Transfers' },
+  reorderRules:  { ar: 'إعادة الطلب',        en: 'Reorder Rules' },
+  categories:    { ar: 'التصنيفات',           en: 'Categories' },
+  locations:     { ar: 'مواضع التخزين',       en: 'Storage Locations' },
+  scan:          { ar: 'مسح الباركود',        en: 'Scan Barcode' },
   logout:        { ar: 'تسجيل الخروج',          en: 'Logout' },
 
   // أزرار عامة

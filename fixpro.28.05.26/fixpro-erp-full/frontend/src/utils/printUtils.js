@@ -17,6 +17,30 @@ export function buildTrackUrl(shop, orderNumber) {
 }
 
 import QRCode from 'qrcode'
+import JsBarcode from 'jsbarcode'
+
+// ── توليد Barcode كـ Data URL (SVG → PNG) ────────────────
+export function generateBarcode(value, opts = {}) {
+  if (!value) return null
+  try {
+    const canvas = document.createElement('canvas')
+    JsBarcode(canvas, String(value), {
+      format:      opts.format      || 'CODE128',
+      width:       opts.width       || 1.5,
+      height:      opts.height      || 35,
+      displayValue: opts.displayValue !== false,
+      fontSize:    opts.fontSize    || 10,
+      margin:      opts.margin      || 4,
+      background:  '#ffffff',
+      lineColor:   '#000000',
+      ...opts
+    })
+    return canvas.toDataURL('image/png')
+  } catch (e) {
+    console.warn('Barcode error:', e)
+    return null
+  }
+}
 import jsPDF from 'jspdf'
 
 // ── توليد QR Code كـ Data URL ─────────────────────────────

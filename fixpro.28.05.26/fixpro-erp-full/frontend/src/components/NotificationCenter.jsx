@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext'
 const PRIORITY_DOT = {
   critical: '#EF4444', high: '#F97316', normal: '#3B82F6', low: '#9CA3AF',
 }
-const ACTIONABLE = ['part_request', 'customer_review']
+const ACTIONABLE = ['part_request', 'customer_review', 'device_ready']
 
 export default function NotificationCenter({ onCountChange, unreadCount: unreadFromParent }) {
   const [open, setOpen]         = useState(false)
@@ -275,5 +275,66 @@ function QuickAction({ notif, isWarehouse, isTech, claiming, claimFirst, changeS
     </div>
   )
 
+  if (notif.type === 'device_ready') return (
+    <DeviceReadyAction ticket={ticket} notif={notif} claiming={claiming}
+      claimFirst={claimFirst} onClose={onClose} />
+  )
+
   return null
+}
+
+function DeviceReadyAction({ ticket, notif, claiming, claimFirst, onClose }) {
+  const [customMsg, setCustomMsg] = useState('')
+  const [sent, setSent] = useState(false)
+
+  const defaultMsg = ticket
+    ? `مرحباً ${ticket.customer_name} 👋\n\nجهازك جاهز للاستلام ✅\n📱 ${ticket.brand} ${ticket.model}\n🔖 رقم التذكرة: ${ticket.order_number}\n\nيسعدنا خدمتكم 🙏`
+    : ''
+
+  const sendWhatsApp = async () => {
+    if (!ticket) return
+    const ok = await claimFirst(notif.id, 'تم إرسال واتساب للعميل')
+    if (!ok) return
+
+    const phone = ticket.customer_phone?.replace(/[^0-9]/g, '').replace(/^0/, '')
+    const msg   = encodeURIComponent(customMsg || defaultMsg)
+    window.open(`https://wa.me/966${phone}?text=${msg}`, '_blank')
+    setSent(true)
+  }
+
+  if (sent) return (
+    <div style={{ textAlign:'center', padding:'12px 0' }}>
+      <div style={{ fontSize:20, marginBottom:6 }}>✅</div>
+      <div style={{ fontSize:12, color:'var(--green)', fontWeight:600 }}>تم إرسال واتساب</div>
+      <button className="btn btn-ghost btn-sm" style={{ marginTop:8 }} onClick={onClose}>إغلاق</button>
+    </div>
+  )
+
+  return (
+    <div>
+      <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8 }}>
+        📱 {ticket?.customer_name} — {ticket?.brand} {ticket?.model}
+      </div>
+      <textarea
+        style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid var(--border)',
+          background:'var(--ink)', color:'var(--text)', fontFamily:'var(--font)', fontSize:11,
+          resize:'vertical', minHeight:80, marginBottom:8, direction:'rtl' }}
+        value={customMsg || defaultMsg}
+        onChange={e => setCustomMsg(e.target.value)}
+      />
+      <div style={{ display:'flex', gap:8 }}>
+        <button
+          style={{ flex:1, padding:'7px', background:'#25D366', color:'#fff', border:'none',
+            borderRadius:6, cursor:'pointer', fontFamily:'var(--font)', fontSize:12,
+            display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+            opacity: claiming ? 0.6 : 1 }}
+          disabled={claiming}
+          onClick={sendWhatsApp}>
+          📱 إرسال واتساب
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>لاحقاً</button>
+      </div>
+    </div>
+  )
+
 }

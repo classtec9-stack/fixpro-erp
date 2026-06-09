@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../services/api'
 import { Modal, Loading, EmptyState, Pagination } from '../components/ui'
 import toast from 'react-hot-toast'
-import { Plus, Search, Layers, List, RefreshCw, Clock, AlertTriangle, Printer, Trash2 } from 'lucide-react'
+import { Plus, Search, Layers, List, RefreshCw, Clock, AlertTriangle, Printer, Trash2, CheckSquare } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useT } from '../context/LangContext'
 import { format } from 'date-fns'
@@ -42,6 +42,7 @@ export default function TicketsPage() {
   const [showNew, setShowNew] = useState(false)
   const [selectedTicket, setSelectedTicket] = useState(null)
   const [printTicket, setPrintTicket] = useState(null)
+  const [deliveryTicket, setDeliveryTicket] = useState(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -213,10 +214,12 @@ export default function TicketsPage() {
           onClose={() => setSelectedTicket(null)}
           onStatusUpdate={updateStatus}
           onPrint={setPrintTicket}
+          onDeliveryPrint={setDeliveryTicket}
         />
       )}
 
       {printTicket && <ReceiptPrint ticket={printTicket} onClose={() => setPrintTicket(null)} />}
+      {deliveryTicket && <DeliveryReceiptModal ticket={deliveryTicket} onClose={() => setDeliveryTicket(null)} />}
     </div>
   )
 }
@@ -273,7 +276,7 @@ function StatusBoard({ data, loading, onUpdateStatus }) {
 }
 
 // ── Ticket Detail Modal ────────────────────────────────────
-function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
+function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint, onDeliveryPrint }) {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({
     queryKey: ['ticket', ticketId],
@@ -343,7 +346,13 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint }) {
     <Modal open={true} onClose={onClose} title={`تذكرة: ${t.order_number}`} maxWidth={700}
       footer={
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => onPrint(t)}><Printer size={13}/> وصل</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onPrint(t)}><Printer size={13}/> وصل الاستلام</button>
+          {['ready','delivered'].includes(t.status) && (
+            <button className="btn btn-sm" style={{ background:'var(--green-dim)', color:'var(--green)', border:'1px solid rgba(16,185,129,.3)' }}
+              onClick={() => { onClose(); onDeliveryPrint && onDeliveryPrint(t) }}>
+              <CheckSquare size={13}/> وصل التسليم
+            </button>
+          )}
           {t.status === 'quick_check' && (
             <>
               <button className="btn btn-primary btn-sm" onClick={() => setShowConvert(true)}>
@@ -1372,5 +1381,230 @@ function TicketEditPanel({ ticket, onUpdate }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════
+// وصل التسليم — Modal مباشر من التذكرة
+// ══════════════════════════════════════════════════════════
+function DeliveryReceiptModal({ ticket: t, onClose }) {
+  const [laborCost, setLaborCost] = useState('')
+  const [payMethod, setPayMethod] = useState('cash')
+  const [printing, setPrinting]   = useState(false)
+
+  const { data: shopData } = useQuery({
+    queryKey: ['shop-settings'],
+    queryFn: () => api.get('/shop-settings'),
+  })
+  const { data: detailData, isLoading } = useQuery({
+    queryKey: ['invoice-for-delivery', t.id],
+    queryFn: () => api.get(`/invoices/ticket/${t.id}`),
+  })
+
+  const shop = shopData?.data  || {}
+  const d    = detailData?.data || {}
+  const inv  = d.invoice
+  const parts = d.parts || []
+
+  const PAY_LABELS = {
+    cash:'نقد', card:'بطاقة', bank_transfer:'تحويل بنكي',
+    mada:'مدى', stc_pay:'STC Pay', apple_pay:'Apple Pay',
+  }
+
+  const doPrint = async () => {
+    setPrinting(true)
+    try {
+      const { generateQR, buildTrackUrl } = await import('../utils/printUtils')
+
+      const trackUrl = buildTrackUrl(shop, t.order_number)
+      const qr = await generateQR(trackUrl, 70)
+      const lc   = parseFloat(laborCost) || parseFloat(inv?.labor_cost || 0)
+      const pc   = parseFloat(d.parts_cost || 0)
+      const disc = parseFloat(inv?.discount || 0)
+      const sub  = lc + pc - disc
+      const vat  = +(sub * 0.15).toFixed(2)
+      const tot  = +(sub + vat).toFixed(2)
+      const paid = parseFloat(inv?.paid_amount || 0)
+      const bal  = +(tot - paid).toFixed(2)
+      const now  = new Date()
+      const W    = shop?.receipt_width || 80
+
+      const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="UTF-8"><title>وصل تسليم ${t.order_number}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;font-size:10px;color:#000;
+    direction:rtl;width:${W}mm;padding:4mm;margin:0 auto}
+  .hdr{text-align:center;border-bottom:2px solid #000;padding-bottom:5px;margin-bottom:6px}
+  .badge{display:inline-block;background:#000;color:#fff;padding:2px 10px;border-radius:3px;font-size:9px;font-weight:700;margin:3px 0}
+  .r2{display:flex;justify-content:space-between;padding:2px 0;font-size:9px}
+  .lb{color:#555}
+  .dvd{border:none;border-top:1px dashed #666;margin:4px 0}
+  .dvd2{border:none;border-top:2px solid #000;margin:5px 0}
+  .tot{display:flex;justify-content:space-between;font-size:12px;font-weight:700;
+    border-top:2px solid #000;padding-top:4px;margin-top:3px}
+  .stamp{text-align:center;font-size:14px;font-weight:900;
+    border:3px solid #000;border-radius:6px;padding:3px 12px;display:inline-block;margin:4px 0}
+  .sig{border:1px solid #000;height:12mm;margin-top:3px;width:100%;
+    display:flex;align-items:center;justify-content:center;color:#aaa;font-size:8px}
+  .ft{font-size:7px;color:#666;text-align:center;margin-top:5px;
+    border-top:1px dashed #000;padding-top:4px;line-height:1.5}
+  @media print{@page{margin:3mm;size:${W}mm auto}body{width:100%}}
+</style></head><body>
+<div class="hdr">
+  ${shop?.logo_url ? `<img src="${shop.logo_url}" style="max-height:38px;display:block;margin:0 auto 4px;object-fit:contain"/>` : ''}
+  <div style="font-size:15px;font-weight:700">${shop?.shop_name || 'FixPro للصيانة'}</div>
+  ${shop?.address ? `<div style="font-size:8px;color:#666">${shop.city||''} — ${shop.address}</div>` : ''}
+  ${shop?.phone ? `<div style="font-size:8px;color:#666">📞 ${shop.phone}</div>` : ''}
+  ${shop?.tax_number ? `<div style="font-size:7px;color:#888">الرقم الضريبي: ${shop.tax_number}</div>` : ''}
+  <div class="badge">وصل تسليم</div>
+  <div style="font-size:16px;font-weight:900;letter-spacing:2px;margin:3px 0">${t.order_number}</div>
+  <div style="font-size:8px;color:#666">
+    ${now.toLocaleDateString('ar-SA')} | ${now.toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'})}
+  </div>
+</div>
+<div class="r2"><span class="lb">العميل</span><span style="font-weight:500">${t.customer_name}</span></div>
+<div class="r2"><span class="lb">الجوال</span><span style="direction:ltr">${t.customer_phone}</span></div>
+<hr class="dvd"/>
+<div class="r2"><span class="lb">الجهاز</span><span style="font-weight:500">${t.brand} ${t.model}</span></div>
+${t.imei ? `<div class="r2"><span class="lb">IMEI</span><span style="direction:ltr;font-family:monospace">${t.imei}</span></div>` : ''}
+${t.color ? `<div class="r2"><span class="lb">اللون</span><span>${t.color}</span></div>` : ''}
+<hr class="dvd"/>
+${parts.length > 0 ? `
+  <div style="font-size:9px;font-weight:700;margin-bottom:3px">القطع المستبدلة:</div>
+  ${parts.map(p => `
+    <div class="r2">
+      <span>${p.part_name}${parseFloat(p.quantity)>1?` ×${p.quantity}`:''}</span>
+      <span style="direction:ltr">${(parseFloat(p.unit_price)*parseFloat(p.quantity)).toLocaleString('ar-SA')} ر</span>
+    </div>`).join('')}
+  <hr class="dvd"/>
+` : ''}
+<div class="r2"><span class="lb">أجرة الإصلاح</span><span>${lc.toLocaleString('ar-SA')} ر</span></div>
+<div class="r2"><span class="lb">قطع الغيار</span><span>${pc.toLocaleString('ar-SA')} ر</span></div>
+${disc > 0 ? `<div class="r2"><span class="lb">خصم</span><span style="color:#16a34a">- ${disc.toLocaleString('ar-SA')} ر</span></div>` : ''}
+<div class="r2"><span class="lb">قبل الضريبة</span><span>${sub.toLocaleString('ar-SA')} ر</span></div>
+<div class="r2"><span class="lb">ضريبة 15%</span><span>${vat.toLocaleString('ar-SA')} ر</span></div>
+<div class="tot"><span>الإجمالي</span><span style="direction:ltr">${tot.toLocaleString('ar-SA')} ريال</span></div>
+${paid > 0 ? `<div class="r2"><span class="lb" style="color:#16a34a">مدفوع</span><span style="color:#16a34a">${paid.toLocaleString('ar-SA')} ر</span></div>` : ''}
+${bal > 0 ? `<div class="r2"><span class="lb" style="color:#dc2626;font-weight:700">المتبقي</span><span style="color:#dc2626">${bal.toLocaleString('ar-SA')} ر</span></div>` : ''}
+<div style="text-align:center;margin:5px 0">
+  ${bal <= 0 ? '<div class="stamp">✓ مدفوع بالكامل</div>' : '<div class="stamp" style="border-color:#dc2626;color:#dc2626">متبقي</div>'}
+</div>
+<div class="r2"><span class="lb">طريقة الدفع</span><span>${PAY_LABELS[payMethod] || payMethod}</span></div>
+<hr class="dvd2"/>
+<div style="font-size:9px;font-weight:700;margin-bottom:3px">✍️ توقيع العميل (استلمت جهازي سليماً):</div>
+<div class="sig">_________________________________</div>
+${qr ? `
+  <div style="text-align:center;margin-top:6px">
+    <img src="${qr}" style="width:45px;height:45px;display:block;margin:0 auto 2px"/>
+    <div style="font-size:7px;color:#888">${trackUrl}</div>
+  </div>` : ''}
+${shop?.invoice_terms ? `<div class="ft">${shop.invoice_terms}</div>` : ''}
+${shop?.invoice_footer ? `<div style="font-size:8px;color:#555;text-align:center;margin-top:3px">${shop.invoice_footer}</div>` : ''}
+</body></html>`
+
+      const win = window.open('', '_blank', 'width=380,height=700')
+      win.document.write(html)
+      win.document.close()
+      setTimeout(() => { win.print(); win.close() }, 600)
+    } catch(e) {
+      toast.error('خطأ في الطباعة: ' + e.message)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose}
+      title={`وصل التسليم — ${t.order_number}`}
+      maxWidth={480}
+      footer={
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+          <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
+          <button className="btn btn-primary" disabled={printing || isLoading} onClick={doPrint}>
+            <Printer size={13}/> {printing ? 'جاري الطباعة...' : 'طباعة وصل التسليم'}
+          </button>
+        </div>
+      }>
+      <div style={{ display:'grid', gap:14 }}>
+        {/* ملخص */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:13 }}>
+          <div style={{ padding:'8px 10px', background:'var(--ink-3)', borderRadius:6 }}>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:2 }}>العميل</div>
+            <div style={{ fontWeight:500 }}>{t.customer_name}</div>
+          </div>
+          <div style={{ padding:'8px 10px', background:'var(--ink-3)', borderRadius:6 }}>
+            <div style={{ fontSize:11, color:'var(--muted)', marginBottom:2 }}>الجهاز</div>
+            <div style={{ fontWeight:500 }}>{t.brand} {t.model}</div>
+          </div>
+        </div>
+
+        {/* القطع */}
+        {isLoading ? (
+          <div style={{ fontSize:12, color:'var(--muted)', textAlign:'center' }}>جاري تحميل الفاتورة...</div>
+        ) : parts.length > 0 && (
+          <div>
+            <div style={{ fontSize:12, fontWeight:600, color:'var(--text-2)', marginBottom:6 }}>
+              القطع المستبدلة ({parts.length})
+            </div>
+            {parts.map((p,i) => (
+              <div key={i} style={{ display:'flex', justifyContent:'space-between',
+                padding:'5px 8px', background:'var(--ink-3)', borderRadius:5, marginBottom:4, fontSize:12 }}>
+                <span>{p.part_name} × {p.quantity}</span>
+                <span style={{ fontFamily:'var(--mono)', color:'var(--blue)' }}>
+                  {(parseFloat(p.unit_price)*parseFloat(p.quantity)).toLocaleString('ar-SA')} ر
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* الإعدادات */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div>
+            <label className="form-label">أجرة الإصلاح (ر.س)</label>
+            <input className="form-input" type="number" min="0" step="0.01"
+              value={laborCost} onChange={e => setLaborCost(e.target.value)}
+              placeholder={inv?.labor_cost || '0'}/>
+          </div>
+          <div>
+            <label className="form-label">طريقة الدفع</label>
+            <select className="form-select" value={payMethod} onChange={e => setPayMethod(e.target.value)}>
+              <option value="cash">نقد</option>
+              <option value="card">بطاقة بنكية</option>
+              <option value="bank_transfer">تحويل بنكي</option>
+              <option value="mada">مدى</option>
+              <option value="stc_pay">STC Pay</option>
+              <option value="apple_pay">Apple Pay</option>
+            </select>
+          </div>
+        </div>
+
+        {/* ملخص مالي */}
+        {inv && (
+          <div style={{ background:'var(--ink-3)', borderRadius:8, padding:'10px 14px', fontSize:13 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
+              <span style={{ color:'var(--muted)' }}>الإجمالي</span>
+              <strong style={{ fontFamily:'var(--mono)' }}>{parseFloat(inv.total||0).toLocaleString('ar-SA')} ريال</strong>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom: parseFloat(inv.balance_due||0) > 0 ? 5 : 0 }}>
+              <span style={{ color:'var(--green)' }}>مدفوع</span>
+              <strong style={{ color:'var(--green)', fontFamily:'var(--mono)' }}>{parseFloat(inv.paid_amount||0).toLocaleString('ar-SA')} ريال</strong>
+            </div>
+            {parseFloat(inv.balance_due||0) > 0 && (
+              <div style={{ display:'flex', justifyContent:'space-between',
+                borderTop:'1px solid var(--border)', paddingTop:5 }}>
+                <span style={{ color:'var(--red)', fontWeight:600 }}>المتبقي</span>
+                <strong style={{ color:'var(--red)', fontFamily:'var(--mono)' }}>{parseFloat(inv.balance_due).toLocaleString('ar-SA')} ريال</strong>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ padding:'8px 12px', background:'var(--blue-dim)', borderRadius:6, fontSize:11, color:'var(--blue)' }}>
+          📋 الوصل يحتوي: بيانات العميل + القطع + المبالغ + خانة توقيع + QR code
+        </div>
+      </div>
+    </Modal>
   )
 }

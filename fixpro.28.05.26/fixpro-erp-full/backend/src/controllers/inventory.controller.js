@@ -428,4 +428,186 @@ const getPartAuditLog = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getParts, createPart, restock, getLowStockAlerts, deletePart, updatePart, getMovements, getPartById, getPartAuditLog };
+
+// ── Features الجديدة ──────────────────────────────────────
+
+// POST /api/inventory/scan — Barcode Scanner
+const scanBarcode = async (req, res, next) => {
+  try {
+    const { barcode } = req.body;
+    if (!barcode) throw new AppError('الباركود مطلوب');
+    const branchId = req.user.branch_id;
+
+    const { rows } = await query(
+      `SELECT p.*, s.name as supplier_name, cat.name as category_name,
+              loc.name as location_name
+       FROM parts p
+       LEFT JOIN suppliers        s   ON s.id   = p.supplier_id
+       LEFT JOIN part_categories  cat ON cat.id  = p.category_id
+       LEFT JOIN storage_locations loc ON loc.id = p.location_id
+       WHERE (p.barcode = $1 OR p.sku = $1)
+         AND p.branch_id = $2
+         AND p.is_active = true`,
+      [barcode.trim(), branchId]
+    );
+
+    if (!rows.length)
+      return res.status(404).json({ success: false, message: `لم يُعثر على قطعة بالباركود: ${barcode}` });
+
+    res.json({ success: true, data: rows[0] });
+  } catch (err) { next(err); }
+};
+
+// GET /api/inventory/categories — التصنيفات الهرمية
+const getCategories = async (req, res, next) => {
+  try {
+    const branchId = req.user.branch_id;
+    const { rows } = await query(
+      `SELECT c.*,
+         p.name as parent_name,
+         (SELECT COUNT(*) FROM parts WHERE category_id = c.id AND is_active = true) as parts_count
+       FROM part_categories c
+       LEFT JOIN part_categories p ON p.id = c.parent_id
+       WHERE c.branch_id = $1 AND c.is_active = true
+       ORDER BY c.parent_id NULLS FIRST, c.sort_order, c.name`,
+      [branchId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+};
+
+// POST /api/inventory/categories
+const createCategory = async (req, res, next) => {
+  try {
+    const { name, parent_id, color, icon } = req.body;
+    if (!name) throw new AppError('اسم التصنيف مطلوب');
+
+    const { rows } = await query(
+      `INSERT INTO part_categories (branch_id, name, parent_id, color, icon)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.user.branch_id, name, parent_id || null, color || '#3B82F6', icon || null]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) { next(err); }
+};
+
+// GET /api/inventory/locations — مواضع التخزين
+const getLocations = async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT l.*,
+         (SELECT COUNT(*) FROM parts WHERE location_id = l.id AND is_active = true) as parts_count
+       FROM storage_locations l
+       WHERE l.branch_id = $1 AND l.is_active = true
+       ORDER BY l.name`,
+      [req.user.branch_id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+};
+
+// POST /api/inventory/locations
+const createLocation = async (req, res, next) => {
+  try {
+    const { name, description } = req.body;
+    if (!name) throw new AppError('اسم الموضع مطلوب');
+    const { rows } = await query(
+      `INSERT INTO storage_locations (branch_id, name, description)
+       VALUES ($1,$2,$3) RETURNING *`,
+      [req.user.branch_id, name, description || null]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) { next(err); }
+};
+
+// GET /api/inventory/reorder-rules
+const getReorderRules = async (req, res, next) => {
+  try {
+    const branchId = req.user.branch_id;
+    const { rows } = await query(
+      `SELECT r.*, p.name as part_name, p.quantity as current_qty,
+              p.sku, s.name as supplier_name
+       FROM reorder_rules r
+       JOIN parts p ON p.id = r.part_id
+       LEFT JOIN suppliers s ON s.id = r.supplier_id
+       WHERE r.branch_id = $1 AND r.is_active = true
+       ORDER BY (p.quantity <= r.trigger_qty) DESC, p.name`,
+      [branchId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+};
+
+// POST /api/inventory/reorder-rules
+const createReorderRule = async (req, res, next) => {
+  try {
+    const { part_id, supplier_id, trigger_qty, reorder_qty } = req.body;
+    if (!part_id || !trigger_qty || !reorder_qty)
+      throw new AppError('القطعة وكميات إعادة الطلب مطلوبة');
+
+    const { rows } = await query(
+      `INSERT INTO reorder_rules (part_id, branch_id, supplier_id, trigger_qty, reorder_qty)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (part_id, branch_id) DO UPDATE SET
+         supplier_id = EXCLUDED.supplier_id,
+         trigger_qty = EXCLUDED.trigger_qty,
+         reorder_qty = EXCLUDED.reorder_qty,
+         is_active   = true
+       RETURNING *`,
+      [part_id, req.user.branch_id, supplier_id || null, trigger_qty, reorder_qty]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) { next(err); }
+};
+
+// POST /api/inventory/reorder-rules/check — فحص وإنشاء POs تلقائية
+const checkReorderRules = async (req, res, next) => {
+  try {
+    const branchId = req.user.branch_id;
+
+    const { rows: triggered } = await query(
+      `SELECT r.*, p.name as part_name, p.quantity, s.name as supplier_name
+       FROM reorder_rules r
+       JOIN parts p ON p.id = r.part_id AND p.branch_id = r.branch_id
+       LEFT JOIN suppliers s ON s.id = r.supplier_id
+       WHERE r.branch_id = $1 AND r.is_active = true
+         AND p.quantity <= r.trigger_qty
+         AND (r.last_triggered IS NULL OR r.last_triggered < NOW() - INTERVAL '24 hours')`,
+      [branchId]
+    );
+
+    const suggestions = triggered.map(r => ({
+      part_id:      r.part_id,
+      part_name:    r.part_name,
+      current_qty:  r.quantity,
+      trigger_qty:  r.trigger_qty,
+      reorder_qty:  r.reorder_qty,
+      supplier_id:  r.supplier_id,
+      supplier_name: r.supplier_name,
+    }));
+
+    // تحديث last_triggered
+    if (triggered.length > 0) {
+      await query(
+        `UPDATE reorder_rules SET last_triggered = NOW()
+         WHERE id = ANY($1::uuid[])`,
+        [triggered.map(r => r.id)]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: `${suggestions.length} صنف يحتاج إعادة طلب`,
+      data: suggestions
+    });
+  } catch (err) { next(err); }
+};
+
+
+module.exports = {
+  getParts, createPart, restock, getLowStockAlerts,
+  deletePart, updatePart, getMovements, getPartById, getPartAuditLog,
+  scanBarcode, getCategories, createCategory,
+  getLocations, createLocation,
+  getReorderRules, createReorderRule, checkReorderRules
+};
