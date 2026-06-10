@@ -58,6 +58,8 @@ import NotificationCenter from './components/NotificationCenter'
 import { CustomersPage, SuppliersPage } from './pages/other'
 import InventoryPage   from './pages/Inventory'
 import DefectivePage   from './pages/Defective'
+import TransfersPage   from './pages/Transfers'
+import WarrantyPage    from './pages/Warranty'
 
 function ProtectedLayout() {
   const { user } = useAuth()
@@ -130,6 +132,8 @@ function ProtectedLayout() {
             <Route path="/service-prices" element={<RoleRoute element={<ServicePricesPage />} roles={['admin','branch_manager']} />} />
             <Route path="/suppliers"      element={<RoleRoute element={<SuppliersPage />}     roles={['admin','branch_manager','warehouse','accountant']} />} />
             <Route path="/defective"      element={<RoleRoute element={<DefectivePage />}     roles={['admin','branch_manager','warehouse']} />} />
+            <Route path="/transfers"      element={<RoleRoute element={<TransfersPage />}     roles={['admin','branch_manager','warehouse']} />} />
+            <Route path="/warranty"       element={<RoleRoute element={<WarrantyPage />}      roles={['admin','branch_manager','receptionist','accountant']} />} />
             <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>

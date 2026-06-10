@@ -20,6 +20,81 @@ const TABS = [
   { id:'locations',  label:'مواضع التخزين',        icon: MapPin },
 ]
 
+
+// ══════════════════════════════════════════════════════════
+// Modal سريع لإرسال قطعة للتوالف من المخزون
+// ══════════════════════════════════════════════════════════
+function QuickDefectiveModal({ part, onClose, onSuccess }) {
+  const [form, setForm] = useState({
+    quantity: 1, source_type: 'stock', reason: ''
+  })
+  const set = (k,v) => setForm(f => ({...f,[k]:v}))
+
+  const mut = useMutation({
+    mutationFn: () => api.post('/defective', {
+      part_id: part.id,
+      quantity: form.quantity,
+      source_type: form.source_type,
+      reason: form.reason,
+      supplier_id: part.supplier_id || null,
+    }),
+    onSuccess,
+    onError: e => toast.error(e?.message || 'فشل الإرسال'),
+  })
+
+  return (
+    <Modal open onClose={onClose} title="إرسال للتوالف"
+      footer={
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+          <button className="btn btn-ghost" onClick={onClose}>إلغاء</button>
+          <button className="btn btn-primary"
+            style={{ background:'var(--amber)', borderColor:'var(--amber)' }}
+            disabled={!form.reason || mut.isPending}
+            onClick={() => mut.mutate()}>
+            {mut.isPending ? '...' : 'إرسال للتوالف'}
+          </button>
+        </div>
+      }>
+      <div style={{ display:'grid', gap:12 }}>
+        <div style={{ padding:'10px 14px', background:'var(--ink-3)', borderRadius:8, fontSize:13 }}>
+          <div style={{ fontWeight:600, color:'var(--text-2)' }}>{part.name}</div>
+          {part.sku && <div style={{ fontSize:11, fontFamily:'var(--mono)', color:'var(--muted)' }}>{part.sku}</div>}
+          <div style={{ fontSize:11, color:'var(--amber)', marginTop:4 }}>متاح في المخزون: {part.quantity}</div>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div>
+            <label className="form-label">الكمية التالفة *</label>
+            <input className="form-input" type="number" min="1" max={part.quantity}
+              value={form.quantity} onChange={e => set('quantity', Number(e.target.value))}/>
+          </div>
+          <div>
+            <label className="form-label">المصدر *</label>
+            <select className="form-select" value={form.source_type}
+              onChange={e => set('source_type', e.target.value)}>
+              <option value="stock">من المخزون (خصم تلقائي)</option>
+              <option value="incoming">عند الاستلام من المورد</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="form-label">سبب التلف *</label>
+          <textarea className="form-input" rows={2} style={{ resize:'none' }}
+            value={form.reason} onChange={e => set('reason', e.target.value)}
+            placeholder="مثال: كسر، تلف في الشحن، عيب تصنيع..."/>
+        </div>
+
+        {!part.supplier_id && (
+          <div style={{ padding:'8px 12px', background:'rgba(245,158,11,.1)', borderRadius:6,
+            fontSize:12, color:'var(--amber)' }}>
+            ⚠️ هذه القطعة بدون مورد — لن يمكن إرجاعها، ستحتاج شطبها لاحقاً
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
 export default function InventoryPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
@@ -71,6 +146,7 @@ function PartsTab({ canEdit, canDelete, qc }) {
   const [editPart, setEditPart]   = useState(null)
   const [detailPart, setDetailPart] = useState(null)
   const [restockPart, setRestockPart] = useState(null)
+  const [defectivePart, setDefectivePart] = useState(null)
   const [scanMode, setScanMode]   = useState(false)
   const barcodeRef = useRef()
 
@@ -235,6 +311,13 @@ function PartsTab({ canEdit, canDelete, qc }) {
                             <Trash2 size={13}/>
                           </button>
                         )}
+                        {canEdit && (
+                          <button className="btn btn-ghost btn-sm" title="إرسال للتوالف"
+                            style={{ color:'var(--amber)' }}
+                            onClick={() => setDefectivePart(p)}>
+                            <AlertTriangle size={13}/>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -268,6 +351,7 @@ function PartsTab({ canEdit, canDelete, qc }) {
       {showAdd    && <PartFormModal mode="add"  onClose={() => setShowAdd(false)} qc={qc} categories={categories} locations={locations} suppliers={suppliers}/>}
       {editPart   && <PartFormModal mode="edit" part={editPart} onClose={() => setEditPart(null)} qc={qc} categories={categories} locations={locations} suppliers={suppliers}/>}
       {restockPart && <RestockModal part={restockPart} onClose={() => setRestockPart(null)} qc={qc} suppliers={suppliers}/>}
+      {defectivePart && <QuickDefectiveModal part={defectivePart} onClose={() => setDefectivePart(null)} onSuccess={() => { setDefectivePart(null); toast.success('تم إرسال القطعة للتوالف ✅'); qc.invalidateQueries(['parts']) }}/>}
       {detailPart && <PartDetailModal part={detailPart} onClose={() => setDetailPart(null)}/>}
     </div>
   )

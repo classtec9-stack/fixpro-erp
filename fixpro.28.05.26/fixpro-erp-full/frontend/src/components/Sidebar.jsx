@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Wrench, Users, UserCheck, Package,
   Receipt, BarChart2, Bell, Settings, LogOut,
   Printer, Building, Sliders, Globe, MessageCircle, CalendarDays, Tags, Monitor, Truck, AlertTriangle,
-  FileText, ShoppingCart, Kanban, Star
+  FileText, ShoppingCart, Kanban, Star, ArrowLeftRight, Shield
 } from 'lucide-react'
 import { useT } from '../utils/i18n'
 import { useLang } from '../context/LangContext'
@@ -17,28 +17,30 @@ const NAV = [
     { to:'/workshop',      icon:Kanban,          key:'workshopBoard',   roles:['admin','branch_manager','technician','receptionist'] },
   ]},
   { section_ar:'الإدارة', section_en:'Management', items:[
-    { to:'/customers',     icon:Users,      key:'customers',     roles:['admin','branch_manager','receptionist','customer_service'] },
-    { to:'/technicians',   icon:UserCheck,  key:'technicians',   roles:['admin','branch_manager'] },
-    { to:'/inventory',     icon:Package,    key:'inventory',     roles:['admin','branch_manager','warehouse'] },
-    { to:'/suppliers',     icon:Truck,          key:'suppliers',     roles:['admin','branch_manager','warehouse','accountant'] },
-    { to:'/defective',     icon:AlertTriangle,  key:'defective',     roles:['admin','branch_manager','warehouse'] },
-    { to:'/purchase-orders', icon:ShoppingCart,   key:'purchaseOrders', roles:['admin','branch_manager','warehouse','accountant'] },
-    { to:'/service-prices', icon:Tags,       key:'servicePrices', roles:['admin','branch_manager'] },
+    { to:'/customers',     icon:Users,           key:'customers',       roles:['admin','branch_manager','receptionist','customer_service'] },
+    { to:'/technicians',   icon:UserCheck,       key:'technicians',     roles:['admin','branch_manager'] },
+    { to:'/inventory',     icon:Package,         key:'inventory',       roles:['admin','branch_manager','warehouse'] },
+    { to:'/suppliers',     icon:Truck,           key:'suppliers',       roles:['admin','branch_manager','warehouse','accountant'] },
+    { to:'/defective',     icon:AlertTriangle,   key:'defective',       roles:['admin','branch_manager','warehouse'] },
+    { to:'/transfers',     icon:ArrowLeftRight,  key:'transfers',       roles:['admin','branch_manager','warehouse'] },
+    { to:'/warranty',      icon:Shield,          key:'warranty',        roles:['admin','branch_manager','receptionist','accountant'] },
+    { to:'/purchase-orders', icon:ShoppingCart,  key:'purchaseOrders',  roles:['admin','branch_manager','warehouse','accountant'] },
+    { to:'/service-prices', icon:Tags,           key:'servicePrices',   roles:['admin','branch_manager'] },
   ]},
   { section_ar:'المالية', section_en:'Finance', items:[
-    { to:'/invoices',      icon:Receipt,    key:'invoices',      roles:['admin','branch_manager','accountant','receptionist'] },
-    { to:'/quotations',    icon:FileText,   key:'quotations',    roles:['admin','branch_manager','receptionist'] },
-    { to:'/reports',       icon:BarChart2,  key:'reports',       roles:['admin','branch_manager','accountant'] },
+    { to:'/invoices',      icon:Receipt,         key:'invoices',        roles:['admin','branch_manager','accountant','receptionist'] },
+    { to:'/quotations',    icon:FileText,        key:'quotations',      roles:['admin','branch_manager','receptionist'] },
+    { to:'/reports',       icon:BarChart2,       key:'reports',         roles:['admin','branch_manager','accountant'] },
   ]},
   { section_ar:'النظام', section_en:'System', items:[
-    { to:'/notifications', icon:Bell,       key:'notifications', roles:null, badge:true },
-    { to:'/print',         icon:Printer,    key:'print',         roles:['admin','branch_manager','receptionist'] },
-    { to:'/branches',      icon:Globe,      key:'branches',      roles:['admin'] },
-    { to:'/appointments',  icon:CalendarDays,  key:'appointments', roles:['admin','branch_manager','receptionist'] },
-    { to:'/whatsapp',      icon:MessageCircle, key:'whatsapp',   roles:['admin','branch_manager'] },
-    { to:'/shop-settings', icon:Building,   key:'shopSettings',  roles:['admin','branch_manager'] },
-    { to:'/printer-settings', icon:Sliders, key:'printerSettings', roles:['admin','branch_manager'] },
-    { to:'/settings',      icon:Settings,   key:'settings',      roles:null },
+    { to:'/notifications', icon:Bell,            key:'notifications',   roles:null, badge:true },
+    { to:'/print',         icon:Printer,         key:'print',           roles:['admin','branch_manager','receptionist'] },
+    { to:'/branches',      icon:Globe,           key:'branches',        roles:['admin'] },
+    { to:'/appointments',  icon:CalendarDays,    key:'appointments',    roles:['admin','branch_manager','receptionist'] },
+    { to:'/whatsapp',      icon:MessageCircle,   key:'whatsapp',        roles:['admin','branch_manager'] },
+    { to:'/shop-settings', icon:Building,        key:'shopSettings',    roles:['admin','branch_manager'] },
+    { to:'/printer-settings', icon:Sliders,      key:'printerSettings', roles:['admin','branch_manager'] },
+    { to:'/settings',      icon:Settings,        key:'settings',        roles:null },
   ]},
 ]
 

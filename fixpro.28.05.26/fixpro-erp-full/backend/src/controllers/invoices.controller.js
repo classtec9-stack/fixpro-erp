@@ -319,6 +319,27 @@ const recordPayment = async (req, res, next) => {
        ) as payments_list FROM invoices i WHERE i.id = $1`,
       [req.params.id]
     );
+    // منح نقاط الولاء تلقائياً عند اكتمال الدفع
+    if (updated[0]?.status === 'paid') {
+      const points = Math.floor(updated[0].total / 10);
+      if (points > 0) {
+        query(`SELECT loyalty_points FROM customers WHERE id=$1`, [updated[0].customer_id])
+          .then(({ rows: cust }) => {
+            const newBalance = (cust[0]?.loyalty_points || 0) + points;
+            return Promise.all([
+              query(`UPDATE customers SET loyalty_points=$1 WHERE id=$2`, [newBalance, updated[0].customer_id]),
+              query(
+                `INSERT INTO loyalty_transactions
+                   (customer_id,branch_id,order_id,invoice_id,transaction_type,points,balance_after,description,expires_at)
+                 VALUES ($1,$2,$3,$4,'earn',$5,$6,$7,NOW()+INTERVAL '1 year')`,
+                [updated[0].customer_id, updated[0].branch_id, updated[0].order_id,
+                 req.params.id, points, newBalance, `نقاط من فاتورة ${updated[0].invoice_number}`]
+              )
+            ]);
+          }).catch(() => {}); // لا تفشل الدفعة بسبب الـ loyalty
+      }
+    }
+
     res.json({ success: true, message: 'تم تسجيل الدفعة', payment: rows[0], invoice: updated[0] });
   } catch (err) { next(err); }
 };

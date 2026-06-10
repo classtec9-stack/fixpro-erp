@@ -220,11 +220,8 @@ export default function DefectivePage() {
                                 style={{ padding:'3px 10px', background:'rgba(239,68,68,.1)', color:'var(--red)',
                                   border:'1px solid rgba(239,68,68,.2)', borderRadius:4, cursor:'pointer',
                                   fontSize:11, fontFamily:'var(--font)' }}
-                                onClick={() => {
-                                  const reason = prompt('سبب الشطب:') ?? 'شطب بموافقة المدير'
-                                  if (reason !== null) writeoffMut.mutate({ id: d.id, reason })
-                                }}>
-                                شطب
+                                onClick={() => writeoffMut.mutate({ id: d.id, reason: 'شطب بموافقة المدير' })}>
+                                {writeoffMut.isPending ? '...' : 'شطب'}
                               </button>
                             </td>
                           )}
@@ -362,7 +359,7 @@ function AddDefectiveModal({ suppliers, onClose, onSuccess }) {
   const { data: partsData } = useQuery({
     queryKey: ['parts-defective-search', partSearch],
     queryFn: () => api.get(`/inventory/parts?search=${partSearch}&limit=10`),
-    enabled: partSearch.length > 1,
+    enabled: partSearch.length >= 1,
   })
   const parts = partsData?.data || []
 

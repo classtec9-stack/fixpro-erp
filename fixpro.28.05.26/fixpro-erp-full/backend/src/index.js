@@ -29,13 +29,14 @@ const warrantyRoutes      = require('./routes/warranty.routes');
 const whatsappRoutes      = require('./routes/whatsapp.routes');
 const partRequestsRoutes  = require('./routes/partRequests.routes');
 const servicePricesRoutes = require('./routes/servicePrices.routes');
-// ── Routes الجديدة (المرحلة الثانية) ──────────────────────
+// ── Routes الجديدة ────────────────────────────────────────
 const quotationsRoutes    = require('./routes/quotations.routes');
 const purchaseOrderRoutes = require('./routes/purchaseOrders.routes');
 const slaRoutes           = require('./routes/sla.routes');
 const loyaltyRoutes       = require('./routes/loyalty.routes');
 const checklistRoutes     = require('./routes/checklist.routes');
 const schedulingRoutes    = require('./routes/scheduling.routes');
+const transfersRoutes     = require('./routes/transfers.routes');
 
 const { errorHandler } = require('./middleware/error.middleware');
 const logger = require('./utils/logger');
@@ -114,13 +115,13 @@ app.use('/api/warranty',       warrantyRoutes);
 app.use('/api/whatsapp',       whatsappRoutes);
 app.use('/api/part-requests',  partRequestsRoutes);
 app.use('/api/service-prices', servicePricesRoutes);
-// ── Routes الجديدة ─────────────────────────────────────────
 app.use('/api/quotations',      quotationsRoutes);
 app.use('/api/purchase-orders', purchaseOrderRoutes);
 app.use('/api/sla',             slaRoutes);
 app.use('/api/loyalty',         loyaltyRoutes);
 app.use('/api/checklist',       checklistRoutes);
 app.use('/api/scheduling',      schedulingRoutes);
+app.use('/api/transfers',       transfersRoutes);
 
 // ── 404 ───────────────────────────────────────────────────
 app.use('*', (req, res) => {

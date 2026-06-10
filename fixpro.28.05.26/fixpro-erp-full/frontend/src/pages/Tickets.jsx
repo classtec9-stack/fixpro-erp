@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../services/api'
 import { Modal, Loading, EmptyState, Pagination } from '../components/ui'
+import WarrantyPartReturn from '../components/WarrantyPartReturn'
 import toast from 'react-hot-toast'
 import { Plus, Search, Layers, List, RefreshCw, Clock, AlertTriangle, Printer, Trash2, CheckSquare } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
@@ -286,6 +287,7 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint, onDeliv
   const [showConvert, setShowConvert]   = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [showWarranty, setShowWarranty] = useState(false)
+  const [showReturnPart, setShowReturnPart] = useState(false)
   const [warrantyForm, setWarrantyForm] = useState({
     claim_type:'same_defect', notes:'', is_free:true,
     technician_fault:false, supplier_defect:false,
@@ -373,6 +375,12 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint, onDeliv
             <button className="btn btn-sm" style={{ background:'rgba(139,92,246,.1)', color:'#8B5CF6', border:'1px solid rgba(139,92,246,.3)' }}
               onClick={() => setShowWarranty(true)}>
               🛡️ طلب ضمان
+            </button>
+          )}
+          {t.ticket_category === 'warranty' && t.parts?.length > 0 && (
+            <button className="btn btn-sm" style={{ background:'rgba(245,158,11,.1)', color:'var(--amber)', border:'1px solid rgba(245,158,11,.3)' }}
+              onClick={() => setShowReturnPart(true)}>
+              🔄 إعادة قطعة للمخزون/التوالف
             </button>
           )}
           <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
@@ -484,6 +492,12 @@ function TicketDetailModal({ ticketId, onClose, onStatusUpdate, onPrint, onDeliv
         </div>
       )}
       {/* نافذة طلب الضمان */}
+      {showReturnPart && (
+        <WarrantyPartReturn
+          ticket={t}
+          onClose={() => setShowReturnPart(false)}
+        />
+      )}
       {showWarranty && (
         <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,.7)',
           display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}

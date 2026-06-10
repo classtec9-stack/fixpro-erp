@@ -8,7 +8,8 @@ import { useNavigate } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, Wrench, Package, Users, Receipt,
   AlertTriangle, Clock, CheckCircle, XCircle, DollarSign,
-  BarChart2, Truck, ShieldCheck, ArrowUpRight, ArrowDownRight
+  BarChart2, Truck, ShieldCheck, ArrowUpRight, ArrowDownRight,
+  CalendarDays, FileText, ShoppingCart, PackageSearch, Shield, UserPlus
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis,
@@ -156,6 +157,38 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+
+      {/* نظرة عامة على العمليات */}
+      {d.operations && (
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:10 }}>
+          {[
+            { label:'مواعيد اليوم',      val: d.operations.appointments_today,    icon: CalendarDays,  color:'#06B6D4', to:'/appointments' },
+            { label:'عروض أسعار معلقة',  val: d.operations.pending_quotations,    icon: FileText,      color:'#8B5CF6', to:'/quotations' },
+            { label:'أوامر شراء جارية',  val: d.operations.pending_pos,           icon: ShoppingCart,  color:'#F59E0B', to:'/purchase-orders' },
+            { label:'طلبات قطع معلقة',   val: d.operations.pending_part_requests, icon: PackageSearch, color:'#EF4444', to:'/inventory' },
+            { label:'ضمانات الشهر',      val: d.operations.warranty_month,        icon: Shield,        color:'#10B981', to:'/warranty' },
+            { label:'عملاء جدد',         val: d.operations.new_customers,         icon: UserPlus,      color:'#3B82F6', to:'/customers' },
+          ].map(op => (
+            <div key={op.label} onClick={() => navigate(op.to)}
+              style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 14px',
+                background:'var(--ink-2)', borderRadius:10, border:'1px solid var(--border)',
+                cursor:'pointer', transition:'border-color .15s' }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = op.color}
+              onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}>
+              <div style={{ width:34, height:34, borderRadius:8, flexShrink:0,
+                background:`${op.color}15`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <op.icon size={16} color={op.color}/>
+              </div>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:17, fontWeight:800, color:'var(--text-2)', fontFamily:'monospace', lineHeight:1.1 }}>
+                  {op.val || 0}
+                </div>
+                <div style={{ fontSize:10, color:'var(--muted)', whiteSpace:'nowrap' }}>{op.label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* KPIs المالية */}
       {CAN.finance && d.financial && (
