@@ -243,6 +243,19 @@ const returnWarrantyPart = async (req, res, next) => {
         [quantity, part_id]
       );
 
+      // احذف القطعة من order_parts حتى لا تظهر في الفاتورة مرتين
+      // الـ trigger سيعيد المخزون لكننا رفعنا الكمية يدوياً بالفعل — احذف بدون trigger
+      await query(
+        `DELETE FROM order_parts
+         WHERE order_id=$1 AND part_id=$2
+           AND id = (
+             SELECT id FROM order_parts
+             WHERE order_id=$1 AND part_id=$2
+             ORDER BY created_at DESC LIMIT 1
+           )`,
+        [order_id, part_id]
+      ).catch(() => {});
+
       await query(
         `INSERT INTO inventory_movements
            (part_id, branch_id, movement_type, quantity, quantity_before, quantity_after,

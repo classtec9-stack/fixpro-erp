@@ -1,4 +1,4 @@
-const { query, getClient } = require('../config/database');
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 const { notifyRole } = require('../utils/notify');
 
@@ -79,9 +79,7 @@ const getTransferById = async (req, res, next) => {
 
 // POST /api/transfers — إنشاء طلب تحويل
 const createTransfer = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { to_branch_id, items, notes } = req.body;
 
     if (!to_branch_id || !items?.length)
@@ -91,7 +89,7 @@ const createTransfer = async (req, res, next) => {
 
     // تحقق من توفر الكميات في الفرع المُرسِل
     for (const item of items) {
-      const { rows: part } = await client.query(
+      const { rows: part } = await query(
         'SELECT quantity, name FROM parts WHERE id=$1 AND branch_id=$2',
         [item.part_id, req.user.branch_id]
       );
@@ -100,172 +98,202 @@ const createTransfer = async (req, res, next) => {
         throw new AppError(`"${part[0].name}" — الكمية المتاحة ${part[0].quantity} فقط`);
     }
 
-    const { rows: transfer } = await client.query(
+    const { rows: transfer } = await query(
       `INSERT INTO branch_transfers
          (from_branch_id, to_branch_id, requested_by, status, notes)
        VALUES ($1,$2,$3,'pending',$4) RETURNING *`,
       [req.user.branch_id, to_branch_id, req.user.id, notes || null]
     );
 
-    for (const item of items) {
-      await client.query(
+    // إدراج كل البنود بجملة واحدة — كلها أو لا شيء
+    try {
+      const values = [];
+      const params = [transfer[0].id];
+      items.forEach((item, i) => {
+        params.push(item.part_id, item.quantity_sent, item.notes || null);
+        const base = 1 + i * 3;
+        values.push(`($1, $${base+1}, $${base+2}, $${base+3})`);
+      });
+      await query(
         `INSERT INTO branch_transfer_items (transfer_id, part_id, quantity_sent, notes)
-         VALUES ($1,$2,$3,$4)`,
-        [transfer[0].id, item.part_id, item.quantity_sent, item.notes || null]
+         VALUES ${values.join(', ')}`,
+        params
       );
+    } catch (itemErr) {
+      // تعويض: احذف رأس التحويل اليتيم
+      await query('DELETE FROM branch_transfers WHERE id=$1', [transfer[0].id]).catch(() => {});
+      throw itemErr;
     }
 
     // إشعار مدير الفرع المستقبل
-    await notifyRole({
+    notifyRole({
       branchId: to_branch_id, roles: ['admin', 'branch_manager', 'warehouse'],
       type: 'general', priority: 'normal', orderId: null,
       message: `📦 طلب تحويل مخزون جديد — ${items.length} صنف من فرع آخر | رقم: ${transfer[0].transfer_number}`
     }).catch(() => {});
 
-    await client.query('COMMIT');
     res.status(201).json({ success: true, message: 'تم إرسال طلب التحويل', data: transfer[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // PATCH /api/transfers/:id/approve — موافقة الفرع المُرسِل
 const approveTransfer = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
-
-    const { rows: transfer } = await client.query(
-      'SELECT * FROM branch_transfers WHERE id=$1 FOR UPDATE',
+    // 1. اقرأ التحويل وتحقق من الصلاحية
+    const { rows: transfer } = await query(
+      'SELECT * FROM branch_transfers WHERE id=$1',
       [req.params.id]
     );
     if (!transfer.length) throw new AppError('التحويل غير موجود', 404);
-    if (transfer[0].status !== 'pending') throw new AppError('التحويل ليس في انتظار موافقة');
     if (transfer[0].from_branch_id !== req.user.branch_id && req.user.role !== 'admin')
       throw new AppError('ليس لديك صلاحية الموافقة على هذا التحويل', 403);
 
-    const { rows: items } = await client.query(
+    // 2. المطالبة الذرّية بالحالة — تمنع الموافقة المزدوجة نهائياً
+    const { rows: claimed } = await query(
+      `UPDATE branch_transfers
+       SET status='in_transit', approved_by=$1, approved_at=NOW(), updated_at=NOW()
+       WHERE id=$2 AND status='pending'
+       RETURNING *`,
+      [req.user.id, req.params.id]
+    );
+    if (!claimed.length)
+      throw new AppError('التحويل ليس في انتظار موافقة — ربما وافق عليه شخص آخر للتو', 409);
+
+    const { rows: items } = await query(
       'SELECT * FROM branch_transfer_items WHERE transfer_id=$1',
       [req.params.id]
     );
 
-    // خصم الكميات من الفرع المُرسِل
+    // 3. خصم الكميات — كل خصم ذرّي بشرط الكمية الكافية
+    const deducted = []; // للتعويض عند الفشل
     for (const item of items) {
-      const { rows: part } = await client.query(
-        'SELECT quantity, name FROM parts WHERE id=$1 AND branch_id=$2 FOR UPDATE',
-        [item.part_id, transfer[0].from_branch_id]
+      const { rowCount } = await query(
+        `UPDATE parts SET quantity = quantity - $1, updated_at=NOW()
+         WHERE id=$2 AND branch_id=$3 AND quantity >= $1`,
+        [item.quantity_sent, item.part_id, claimed[0].from_branch_id]
       );
-      if (!part.length || part[0].quantity < item.quantity_sent)
-        throw new AppError(`"${part[0]?.name || 'قطعة'}" — الكمية غير كافية`);
 
-      await client.query(
-        'UPDATE parts SET quantity = quantity - $1, updated_at=NOW() WHERE id=$2 AND branch_id=$3',
-        [item.quantity_sent, item.part_id, transfer[0].from_branch_id]
-      );
+      if (rowCount === 0) {
+        // فشل: كمية غير كافية — عوّض كل ما خُصم وأعد الحالة
+        for (const d of deducted) {
+          await query(
+            'UPDATE parts SET quantity = quantity + $1 WHERE id=$2 AND branch_id=$3',
+            [d.quantity_sent, d.part_id, claimed[0].from_branch_id]
+          ).catch(() => {});
+        }
+        await query(
+          `UPDATE branch_transfers
+           SET status='pending', approved_by=NULL, approved_at=NULL, updated_at=NOW()
+           WHERE id=$1`,
+          [req.params.id]
+        ).catch(() => {});
+
+        const { rows: p } = await query('SELECT name, quantity FROM parts WHERE id=$1 AND branch_id=$2',
+          [item.part_id, claimed[0].from_branch_id]);
+        throw new AppError(
+          `"${p[0]?.name || 'قطعة'}" — الكمية المتاحة ${p[0]?.quantity ?? 0} لا تكفي. أُلغيت الموافقة بالكامل.`
+        );
+      }
+
+      deducted.push(item);
 
       // سجل حركة الخروج
-      await client.query(
+      await query(
         `INSERT INTO inventory_movements
            (part_id, branch_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
          VALUES ($1,$2,'issue',$3,$4,'branch_transfer','تحويل لفرع آخر',$5)`,
-        [item.part_id, transfer[0].from_branch_id, item.quantity_sent, req.params.id, req.user.id]
+        [item.part_id, claimed[0].from_branch_id, item.quantity_sent, req.params.id, req.user.id]
       ).catch(() => {});
     }
 
-    await client.query(
-      `UPDATE branch_transfers SET status='in_transit', approved_by=$1, approved_at=NOW(), updated_at=NOW()
-       WHERE id=$2`,
-      [req.user.id, req.params.id]
-    );
-
     // إشعار الفرع المستقبل
-    await notifyRole({
-      branchId: transfer[0].to_branch_id, roles: ['admin', 'branch_manager', 'warehouse'],
+    notifyRole({
+      branchId: claimed[0].to_branch_id, roles: ['admin', 'branch_manager', 'warehouse'],
       type: 'general', priority: 'normal', orderId: null,
-      message: `🚚 تحويل مخزون في الطريق إليكم — ${transfer[0].transfer_number}`
+      message: `🚚 تحويل مخزون في الطريق إليكم — ${claimed[0].transfer_number}`
     }).catch(() => {});
 
-    await client.query('COMMIT');
     res.json({ success: true, message: 'تمت الموافقة — تم خصم المخزون وإرسال الإشعار' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // PATCH /api/transfers/:id/receive — استلام الفرع المستقبل
 const receiveTransfer = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
-
-    const { rows: transfer } = await client.query(
-      'SELECT * FROM branch_transfers WHERE id=$1 FOR UPDATE',
+    const { rows: transfer } = await query(
+      'SELECT * FROM branch_transfers WHERE id=$1',
       [req.params.id]
     );
     if (!transfer.length) throw new AppError('التحويل غير موجود', 404);
-    if (transfer[0].status !== 'in_transit') throw new AppError('التحويل ليس في الطريق');
     if (transfer[0].to_branch_id !== req.user.branch_id && req.user.role !== 'admin')
       throw new AppError('ليس لديك صلاحية الاستلام', 403);
 
-    const { rows: items } = await client.query(
-      'SELECT bti.*, p.avg_cost, p.cost_price FROM branch_transfer_items bti JOIN parts p ON p.id=bti.part_id WHERE bti.transfer_id=$1',
+    // المطالبة الذرّية — تمنع الاستلام المزدوج (وبالتالي ازدواج المخزون)
+    const { rows: claimed } = await query(
+      `UPDATE branch_transfers
+       SET status='received', received_by=$1, received_at=NOW(), updated_at=NOW()
+       WHERE id=$2 AND status='in_transit'
+       RETURNING *`,
+      [req.user.id, req.params.id]
+    );
+    if (!claimed.length)
+      throw new AppError('التحويل ليس في الطريق — ربما استُلم مسبقاً', 409);
+
+    const { rows: items } = await query(
+      `SELECT bti.*, p.avg_cost, p.cost_price
+       FROM branch_transfer_items bti
+       JOIN parts p ON p.id = bti.part_id
+       WHERE bti.transfer_id=$1`,
       [req.params.id]
     );
 
+    const failures = [];
     for (const item of items) {
-      // تحقق هل القطعة موجودة في الفرع المستقبل
-      const { rows: existing } = await client.query(
-        'SELECT id, quantity FROM parts WHERE id=$1 AND branch_id=$2',
-        [item.part_id, transfer[0].to_branch_id]
-      );
-
-      if (existing.length) {
-        // القطعة موجودة → زيادة الكمية
-        await client.query(
+      try {
+        // زيادة الكمية إذا القطعة موجودة في الفرع المستقبل
+        const { rowCount } = await query(
           'UPDATE parts SET quantity = quantity + $1, updated_at=NOW() WHERE id=$2 AND branch_id=$3',
-          [item.quantity_sent, item.part_id, transfer[0].to_branch_id]
+          [item.quantity_sent, item.part_id, claimed[0].to_branch_id]
         );
-      } else {
-        // القطعة غير موجودة في الفرع الجديد → نسخ القطعة
-        await client.query(
-          `INSERT INTO parts (branch_id, name, sku, barcode, category, brand_compat,
-             quantity, min_quantity, cost_price, avg_cost, sell_price, supplier_id, location, notes, is_active)
-           SELECT $1, name, sku||'-TRF', barcode, category, brand_compat,
-             $2, min_quantity, cost_price, avg_cost, sell_price, supplier_id, location, notes, true
-           FROM parts WHERE id=$3`,
-          [transfer[0].to_branch_id, item.quantity_sent, item.part_id]
+
+        if (rowCount === 0) {
+          // القطعة غير موجودة في الفرع الجديد → انسخها
+          await query(
+            `INSERT INTO parts (branch_id, name, sku, barcode, category, brand_compat,
+               quantity, min_quantity, cost_price, avg_cost, sell_price, supplier_id, location, notes, is_active)
+             SELECT $1, name, sku||'-TRF', barcode, category, brand_compat,
+               $2, min_quantity, cost_price, avg_cost, sell_price, supplier_id, location, notes, true
+             FROM parts WHERE id=$3`,
+            [claimed[0].to_branch_id, item.quantity_sent, item.part_id]
+          );
+        }
+
+        await query(
+          'UPDATE branch_transfer_items SET quantity_received=$1 WHERE id=$2',
+          [item.quantity_sent, item.id]
         );
+
+        await query(
+          `INSERT INTO inventory_movements
+             (part_id, branch_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
+           VALUES ($1,$2,'purchase',$3,$4,'branch_transfer','استلام تحويل من فرع آخر',$5)`,
+          [item.part_id, claimed[0].to_branch_id, item.quantity_sent, req.params.id, req.user.id]
+        ).catch(() => {});
+
+      } catch (itemErr) {
+        failures.push(item.part_id);
       }
-
-      // تحديث quantity_received
-      await client.query(
-        'UPDATE branch_transfer_items SET quantity_received=$1 WHERE id=$2',
-        [item.quantity_sent, item.id]
-      );
-
-      // سجل حركة الدخول
-      await client.query(
-        `INSERT INTO inventory_movements
-           (part_id, branch_id, movement_type, quantity, reference_id, reference_type, notes, created_by)
-         VALUES ($1,$2,'purchase',$3,$4,'branch_transfer','استلام تحويل من فرع آخر',$5)`,
-        [item.part_id, transfer[0].to_branch_id, item.quantity_sent, req.params.id, req.user.id]
-      ).catch(() => {});
     }
 
-    await client.query(
-      `UPDATE branch_transfers SET status='received', received_by=$1, received_at=NOW(), updated_at=NOW()
-       WHERE id=$2`,
-      [req.user.id, req.params.id]
-    );
+    if (failures.length)
+      return res.json({
+        success: true,
+        message: `تم الاستلام لكن ${failures.length} صنف لم يُضف للمخزون — راجع المخزون يدوياً`,
+        failed_part_ids: failures
+      });
 
-    await client.query('COMMIT');
     res.json({ success: true, message: 'تم استلام التحويل وتحديث المخزون' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // PATCH /api/transfers/:id/cancel

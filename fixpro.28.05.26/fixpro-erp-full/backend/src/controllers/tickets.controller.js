@@ -1,4 +1,4 @@
-const { query, getClient } = require('../config/database');
+const { query } = require('../config/database');
 const { events } = require('../utils/notify');
 const whatsapp = require('../services/whatsapp.service');
 const { AppError } = require('../middleware/error.middleware');
@@ -142,9 +142,7 @@ const getTicketById = async (req, res, next) => {
 
 // POST /api/tickets  — إنشاء تذكرة جديدة
 const createTicket = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
 
     const {
       // بيانات العميل
@@ -171,7 +169,7 @@ const createTicket = async (req, res, next) => {
     if (!cust_id) {
       if (!customer_name || !customer_phone) throw new AppError('اسم العميل ورقم الجوال مطلوبان');
 
-      const existingCust = await client.query(
+      const existingCust = await query(
         'SELECT id, full_name FROM customers WHERE phone = $1 AND branch_id = $2 LIMIT 1',
         [customer_phone, req.user.branch_id]
       );
@@ -180,7 +178,6 @@ const createTicket = async (req, res, next) => {
         const existing = existingCust.rows[0];
         // إذا الاسم مختلف — لا تُحدَّث تلقائياً
         if (existing.full_name !== customer_name) {
-          await client.query('ROLLBACK');
           return res.status(409).json({
             success: false,
             code: 'CUSTOMER_NAME_CONFLICT',
@@ -192,12 +189,23 @@ const createTicket = async (req, res, next) => {
         cust_id = existing.id;
       } else {
         // عميل جديد
-        const custRes = await client.query(
+        const custRes = await query(
           `INSERT INTO customers (branch_id, full_name, phone, email)
-           VALUES ($1,$2,$3,$4) RETURNING id`,
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (phone, branch_id) DO NOTHING
+           RETURNING id`,
           [req.user.branch_id, customer_name, customer_phone, customer_email || null]
         );
-        cust_id = custRes.rows[0].id;
+        if (custRes.rows.length) {
+          cust_id = custRes.rows[0].id;
+        } else {
+          // سباق: عميل آخر أُنشئ بنفس الرقم للتو — استخدمه
+          const { rows: raceCust } = await query(
+            'SELECT id FROM customers WHERE phone=$1 AND branch_id=$2',
+            [customer_phone, req.user.branch_id]
+          );
+          cust_id = raceCust[0].id;
+        }
       }
     }
 
@@ -210,7 +218,7 @@ const createTicket = async (req, res, next) => {
       const brand = device_brand || 'غير محدد';
       const model = device_model || 'غير محدد';
       
-      const devRes = await client.query(
+      const devRes = await query(
         `INSERT INTO devices (customer_id, device_type, brand, model, color, imei, serial_no)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
         [cust_id, device_type || 'smartphone', brand, model,
@@ -221,7 +229,7 @@ const createTicket = async (req, res, next) => {
 
     const initial_status = ticket_type === 'quick_check' ? 'quick_check' : 'new';
 
-    const { rows } = await client.query(
+    const { rows } = await query(
       `INSERT INTO orders
          (branch_id, customer_id, device_id, created_by, technician_id,
           status, priority, problem_desc, customer_notes,
@@ -241,11 +249,11 @@ const createTicket = async (req, res, next) => {
     );
 
     // سجل الإنشاء
-    await client.query(
+    await query(
       `INSERT INTO order_status_log (order_id, changed_by, new_status, note)
        VALUES ($1,$2,$3,$4)`,
       [rows[0].id, req.user.id, initial_status, 'تم إنشاء التذكرة']
-    );
+    ).catch(() => {});
 
     // إشعار الفني المعين عند إنشاء التذكرة
     if (technician_id) {
@@ -257,8 +265,6 @@ const createTicket = async (req, res, next) => {
          `تم إسناد تذكرة جديدة إليك: ${rows[0].order_number}`]
       ).catch(e => console.warn('notif err:', e.message));
     }
-
-    await client.query('COMMIT');
 
     // جلب التذكرة كاملة
     const full = await query(
@@ -283,10 +289,7 @@ const createTicket = async (req, res, next) => {
       `${full.rows[0]?.brand || ''} ${full.rows[0]?.model || ''}`
     ).catch(() => {});
 
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // PATCH /api/tickets/:id/status  — تحديث الحالة مع سجل كامل
@@ -774,14 +777,12 @@ const getDevicesBoard = async (req, res, next) => {
 
 // PATCH /api/tickets/:id — تعديل بيانات التذكرة (العطل، نوع الجهاز، التكلفة)
 const updateTicket = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { problem_desc, device_type, device_brand, device_model,
             device_color, device_imei, estimated_cost, diagnosis_notes, priority } = req.body;
 
     // جلب التذكرة الحالية
-    const { rows: current } = await client.query(
+    const { rows: current } = await query(
       'SELECT o.*, d.id as device_id FROM orders o JOIN devices d ON d.id=o.device_id WHERE o.id=$1',
       [req.params.id]
     );
@@ -789,7 +790,7 @@ const updateTicket = async (req, res, next) => {
     const old = current[0];
 
     // تحديث بيانات الجهاز
-    await client.query(
+    await query(
       `UPDATE devices SET
          device_type = COALESCE($1, device_type),
          brand = COALESCE($2, brand),
@@ -801,7 +802,7 @@ const updateTicket = async (req, res, next) => {
     );
 
     // تحديث بيانات الطلب
-    const { rows } = await client.query(
+    const { rows } = await query(
       `UPDATE orders SET
          problem_desc    = COALESCE($1, problem_desc),
          diagnosis_notes = COALESCE($2, diagnosis_notes),
@@ -812,27 +813,23 @@ const updateTicket = async (req, res, next) => {
       [problem_desc, diagnosis_notes, estimated_cost, priority, req.params.id]
     );
 
-    // سجل التغيير في التاريخ إذا تغيّر العطل
+    // سجل التغيير إذا تغيّر العطل
     if (problem_desc && problem_desc !== old.problem_desc) {
-      await client.query(
-        `INSERT INTO order_status_history (order_id, old_status, new_status, note, changed_by)
-         VALUES ($1, $2, $2, $3, $4)`,
-        [req.params.id, old.status, `تعديل العطل: ${old.problem_desc} ← ${problem_desc}`, req.user.id]
+      await query(
+        `INSERT INTO order_status_log (order_id, changed_by, old_status, new_status, note)
+         VALUES ($1, $2, $3, $3, $4)`,
+        [req.params.id, req.user.id, old.status,
+         `تعديل العطل: ${old.problem_desc} ← ${problem_desc}`]
       ).catch(() => {});
     }
 
-    await client.query('COMMIT');
     res.json({ success: true, message: 'تم تحديث التذكرة', data: rows[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // POST /api/tickets/:id/rejection-decision
 // الفني يقرر: هل يُرجع القطعة أم لا عند رفض العميل
 const rejectionDecision = async (req, res, next) => {
-  const client = await getClient();
   try {
     const { return_parts } = req.body; // true = إرجاع، false = لا إرجاع
     const { rows: ticket } = await query(
@@ -851,30 +848,27 @@ const rejectionDecision = async (req, res, next) => {
         ticket[0].technician_id !== req.user.id)
       throw new AppError('يمكن للفني المعيّن فقط اتخاذ هذا القرار', 403);
 
-    await client.query('BEGIN');
-
     if (return_parts) {
-      // الفني يُرجع القطع — احذف من order_parts وtrg_restore_inventory يعيدها
-      const { rows: parts } = await client.query(
+      // الفني يُرجع القطع — حذف order_parts يستدعي trg_restore_inventory تلقائياً
+      const { rows: parts } = await query(
         'SELECT * FROM order_parts WHERE order_id = $1',
         [req.params.id]
       );
 
       for (const p of parts) {
-        // جلب الكمية الحالية قبل الحذف
-        const { rows: beforePart } = await client.query(
+        const { rows: beforePart } = await query(
           'SELECT quantity, avg_cost, cost_price, branch_id FROM parts WHERE id = $1',
           [p.part_id]
         );
         const qtyBefore = beforePart[0]?.quantity || 0;
-        const qtyAfter  = qtyBefore + p.quantity;  // بعد trigger الإرجاع
+        const qtyAfter  = qtyBefore + p.quantity;
         const branchId  = beforePart[0]?.branch_id;
         const unitCost  = parseFloat(beforePart[0]?.avg_cost) || parseFloat(beforePart[0]?.cost_price) || 0;
 
-        await client.query('DELETE FROM order_parts WHERE id = $1', [p.id]);
+        // DELETE + trigger الإرجاع = عملية ذرّية واحدة في PostgreSQL
+        await query('DELETE FROM order_parts WHERE id = $1', [p.id]);
 
-        // تسجيل الإرجاع — كامل
-        await client.query(
+        await query(
           `INSERT INTO inventory_movements
              (part_id, branch_id, movement_type, quantity, quantity_before, quantity_after,
               unit_cost, reference_id, reference_type, notes, created_by)
@@ -885,28 +879,30 @@ const rejectionDecision = async (req, res, next) => {
       }
     }
 
-    // أغلق التذكرة كمرفوضة
-    await client.query(
-      `SELECT set_config('app.current_user_id', $1, true)`,
-      [req.user.id.toString()]
-    ).catch(() => {});
-
-    await client.query(
-      `UPDATE orders SET status = 'rejected', updated_at = NOW() WHERE id = $1`,
+    // أغلق التذكرة كمرفوضة — UPDATE ذرّي مع فحص الحالة
+    const { rows: closed } = await query(
+      `UPDATE orders SET status = 'rejected', updated_at = NOW()
+       WHERE id = $1 AND status = 'awaiting_technician_rejection'
+       RETURNING id`,
       [req.params.id]
     );
+    if (!closed.length)
+      throw new AppError('تعذر إغلاق التذكرة — ربما تغيرت حالتها للتو', 409);
 
-    await client.query('COMMIT');
+    // سجل القرار باسم المنفذ
+    await query(
+      `INSERT INTO order_status_log (order_id, changed_by, old_status, new_status, note)
+       VALUES ($1,$2,'awaiting_technician_rejection','rejected',$3)`,
+      [req.params.id, req.user.id,
+       return_parts ? 'قرار الفني: إرجاع القطع للمخزون' : 'قرار الفني: القطعة مركّبة — لا إرجاع']
+    ).catch(() => {});
 
     const msg = return_parts
       ? 'تم إرجاع القطع للمخزون وإغلاق التذكرة كمرفوضة'
       : 'تم إغلاق التذكرة كمرفوضة — القطعة مركّبة';
 
     res.json({ success: true, message: msg });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 module.exports = {

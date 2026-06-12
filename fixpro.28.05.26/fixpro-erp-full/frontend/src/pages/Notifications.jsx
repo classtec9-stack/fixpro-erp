@@ -361,7 +361,9 @@ function NotifActionModal({ notif, onClose, onDone }) {
             <PartRequestActions ticket={t} onDone={onDone} claimFirst={tryClaimFirst} claiming={claiming} />
           )}
           {(notif.type === 'device_ready' || (notif.type === 'status_change' && t?.status === 'ready')) && (
-            <DeviceReadyWhatsApp ticket={t} notif={notif} onDone={onDone} claimFirst={tryClaimFirst} claiming={claiming} />
+            ['admin','branch_manager','customer_service'].includes(user?.role)
+              ? <DeviceReadyWhatsApp ticket={t} notif={notif} onDone={onDone} claimFirst={tryClaimFirst} claiming={claiming} />
+              : <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
           )}
           {notif.type === 'status_change' && t?.status !== 'ready' && (
             <div style={{ display:'flex', gap:8, marginTop:4 }}>

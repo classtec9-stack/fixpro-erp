@@ -1,4 +1,4 @@
-const { query, getClient } = require('../config/database');
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 const { notifyRole } = require('../utils/notify');
 

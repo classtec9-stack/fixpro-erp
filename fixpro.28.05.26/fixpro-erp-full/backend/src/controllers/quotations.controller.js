@@ -1,4 +1,6 @@
-const { query, getClient } = require('../config/database');
+// backend/src/controllers/quotations.controller.js
+// بدون transactions — متوافق مع Supabase pooler
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 const whatsapp = require('../services/whatsapp.service');
 
@@ -11,8 +13,7 @@ const getQuotations = async (req, res, next) => {
     const { status, page = 1, limit = 20, search } = req.query;
     const offset = (page - 1) * limit;
     const branchId = getBranchId(req);
-    const params = [];
-    const conds = [];
+    const params = [], conds = [];
 
     if (branchId) { params.push(branchId); conds.push(`q.branch_id = $${params.length}`); }
     if (status)   { params.push(status);   conds.push(`q.status = $${params.length}`); }
@@ -60,8 +61,7 @@ const getQuotationById = async (req, res, next) => {
        JOIN orders    o ON o.id = q.order_id
        JOIN devices   d ON d.id = o.device_id
        LEFT JOIN users u ON u.id = q.created_by
-       WHERE q.id = $1
-         AND ($2::uuid IS NULL OR q.branch_id = $2)`,
+       WHERE q.id = $1 AND ($2::uuid IS NULL OR q.branch_id = $2)`,
       [req.params.id, branchId]
     );
     if (!rows.length) throw new AppError('عرض السعر غير موجود', 404);
@@ -69,26 +69,23 @@ const getQuotationById = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// POST /api/quotations — إنشاء عرض سعر من تذكرة
+// POST /api/quotations
 const createQuotation = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { order_id, labor_cost = 0, discount = 0, notes, valid_hours = 48 } = req.body;
     if (!order_id) throw new AppError('رقم التذكرة مطلوب');
 
-    // تحقق من التذكرة
-    const { rows: orderRows } = await client.query(
+    const branchId = getBranchId(req);
+    const { rows: orderRows } = await query(
       `SELECT o.*, c.full_name as customer_name, c.phone as customer_phone
        FROM orders o JOIN customers c ON c.id = o.customer_id
        WHERE o.id = $1 AND ($2::uuid IS NULL OR o.branch_id = $2)`,
-      [order_id, getBranchId(req)]
+      [order_id, branchId]
     );
     if (!orderRows.length) throw new AppError('التذكرة غير موجودة', 404);
     const o = orderRows[0];
 
-    // حساب تكلفة القطع
-    const { rows: partsRows } = await client.query(
+    const { rows: partsRows } = await query(
       'SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM order_parts WHERE order_id = $1',
       [order_id]
     );
@@ -98,7 +95,8 @@ const createQuotation = async (req, res, next) => {
     const total      = +(subtotal + vat_amount).toFixed(2);
     const valid_until = new Date(Date.now() + valid_hours * 3600000);
 
-    const { rows } = await client.query(
+    // INSERT ذرّي — يمنع عروض أسعار مكررة لنفس التذكرة بنفس المبلغ
+    const { rows } = await query(
       `INSERT INTO quotations
          (order_id, customer_id, branch_id, created_by,
           labor_cost, parts_cost, subtotal, discount, vat_amount, total,
@@ -111,20 +109,16 @@ const createQuotation = async (req, res, next) => {
     );
 
     // ربط الـ quotation بالأوردر
-    await client.query(
+    await query(
       'UPDATE orders SET quotation_id=$1 WHERE id=$2',
       [rows[0].id, order_id]
     );
 
-    await client.query('COMMIT');
     res.status(201).json({ success: true, message: 'تم إنشاء عرض السعر', data: rows[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
-// POST /api/quotations/:id/send — إرسال للعميل عبر واتساب
+// POST /api/quotations/:id/send
 const sendQuotation = async (req, res, next) => {
   try {
     const branchId = getBranchId(req);
@@ -143,10 +137,9 @@ const sendQuotation = async (req, res, next) => {
     if (!rows.length) throw new AppError('عرض السعر غير موجود', 404);
     const q = rows[0];
 
-    if (q.status === 'approved' || q.status === 'rejected')
+    if (['approved','rejected'].includes(q.status))
       throw new AppError('لا يمكن إرسال عرض سعر تمت معالجته');
 
-    // رسالة واتساب
     const msg =
       `مرحباً ${q.customer_name} 👋\n\n` +
       `📋 *عرض سعر إصلاح جهازك*\n` +
@@ -174,60 +167,52 @@ const sendQuotation = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// PATCH /api/quotations/:id/respond — استجابة العميل
+// PATCH /api/quotations/:id/respond
 const respondToQuotation = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
-    const { response, rejection_reason } = req.body; // approved | rejected
+    const { response, rejection_reason } = req.body;
     if (!['approved', 'rejected'].includes(response))
       throw new AppError('الاستجابة يجب أن تكون approved أو rejected');
 
     const branchId = getBranchId(req);
-    const { rows: qRows } = await client.query(
-      `SELECT q.*, o.status as order_status
-       FROM quotations q JOIN orders o ON o.id = q.order_id
-       WHERE q.id = $1 AND ($2::uuid IS NULL OR q.branch_id = $2)`,
-      [req.params.id, branchId]
+
+    // 1. المطالبة الذرّية — يمنع الاستجابة المزدوجة
+    const { rows: claimed } = await query(
+      `UPDATE quotations
+       SET status=$1, customer_response=$1, response_at=NOW(),
+           rejection_reason=$2, updated_at=NOW()
+       WHERE id=$3
+         AND ($4::uuid IS NULL OR branch_id = $4)
+         AND status IN ('sent','draft')
+       RETURNING order_id, status`,
+      [response, rejection_reason || null, req.params.id, branchId]
     );
-    if (!qRows.length) throw new AppError('عرض السعر غير موجود', 404);
-    const q = qRows[0];
+    if (!claimed.length) {
+      const { rows: q } = await query('SELECT status FROM quotations WHERE id=$1', [req.params.id]);
+      if (!q.length) throw new AppError('عرض السعر غير موجود', 404);
+      throw new AppError('هذا العرض تمت معالجته مسبقاً', 409);
+    }
 
-    if (q.status !== 'sent' && q.status !== 'draft')
-      throw new AppError('هذا العرض تمت معالجته مسبقاً');
+    const orderId = claimed[0].order_id;
 
-    // تحديث الـ quotation
-    await client.query(
-      `UPDATE quotations SET
-         status=$1, customer_response=$1, response_at=NOW(),
-         rejection_reason=$2, updated_at=NOW()
-       WHERE id=$3`,
-      [response, rejection_reason || null, req.params.id]
-    );
-
-    // تحديث حالة التذكرة
+    // 2. تحديث حالة التذكرة بشكل ذرّي
     if (response === 'approved') {
-      await client.query(
-        `UPDATE orders SET status='in_repair', updated_at=NOW() WHERE id=$1`,
-        [q.order_id]
+      await query(
+        "UPDATE orders SET status='in_repair', updated_at=NOW() WHERE id=$1",
+        [orderId]
       );
     } else {
-      // رفض → انتظار قرار الفني
-      await client.query(
-        `UPDATE orders SET status='awaiting_technician_rejection', updated_at=NOW() WHERE id=$1`,
-        [q.order_id]
+      await query(
+        "UPDATE orders SET status='awaiting_technician_rejection', updated_at=NOW() WHERE id=$1",
+        [orderId]
       );
     }
 
-    await client.query('COMMIT');
     res.json({
       success: true,
       message: response === 'approved' ? 'تمت الموافقة — بدأ الإصلاح' : 'تم تسجيل الرفض'
     });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 module.exports = { getQuotations, getQuotationById, createQuotation, sendQuotation, respondToQuotation };

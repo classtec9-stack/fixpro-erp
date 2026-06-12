@@ -32,7 +32,11 @@ const TRANSITIONS = {
     { to: 'diagnosing',       label: 'إعادة الفحص',               icon: '🔬', color: '#8B5CF6' },
   ],
   waiting_part: [
-    { to: 'in_repair',        label: 'وصلت القطعة — استمرار الإصلاح', icon: '🔧', color: '#3B82F6' },
+    // ينتظر موافقة المخزون — لا يُسمح بالتخطي اليدوي لـ in_repair
+    { to: 'rejected',         label: 'إلغاء — القطعة غير متوفرة',  icon: '✗',  color: '#EF4444', needsReason: true },
+  ],
+  part_transferred: [
+    { to: 'in_repair',        label: '✅ تأكيد استلام القطعة — بدء الإصلاح', icon: '🔧', color: '#3B82F6' },
     { to: 'waiting_approval', label: 'طلب التواصل مع العميل',      icon: '📞', color: '#F59E0B', needsMsg: true },
     { to: 'rejected',         label: 'إلغاء — القطعة غير متوفرة',  icon: '✗',  color: '#EF4444', needsReason: true },
   ],

@@ -87,7 +87,7 @@ router.patch('/:id/claim', async (req, res, next) => {
 
     // تحقق من وجود الإشعار وانتمائه للمستخدم
     const { rows: existing } = await query(
-      `SELECT id, claimed_by, action_taken, claimed_by_name
+      `SELECT n.id, n.claimed_by, n.action_taken, u.full_name as claimed_by_name
        FROM notifications n
        LEFT JOIN users u ON u.id = n.claimed_by
        WHERE n.id = $1 AND n.recipient = $2`,

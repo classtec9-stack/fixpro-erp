@@ -1,4 +1,6 @@
-const { query, getClient } = require('../config/database');
+// backend/src/controllers/adjustments.controller.js
+// بدون transactions — متوافق مع Supabase pooler
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 const { notifyRole } = require('../utils/notify');
 
@@ -8,8 +10,7 @@ const getAdjustments = async (req, res, next) => {
     const branchId = req.user.branch_id || null;
     const { status, page = 1, limit = 30 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const params = [];
-    const conditions = [];
+    const params = [], conditions = [];
 
     if (branchId) { params.push(branchId); conditions.push(`ia.branch_id = $${params.length}`); }
     if (status)   { params.push(status);   conditions.push(`ia.status = $${params.length}`); }
@@ -56,7 +57,6 @@ const createAdjustment = async (req, res, next) => {
 
     const branchId = req.user.branch_id;
 
-    // جلب الكمية الحالية من النظام
     const { rows: part } = await query(
       'SELECT quantity, name, branch_id FROM parts WHERE id=$1 AND ($2::uuid IS NULL OR branch_id=$2)',
       [part_id, branchId || null]
@@ -71,13 +71,9 @@ const createAdjustment = async (req, res, next) => {
        reason, notes, req.user.id]
     );
 
-    // إشعار المدير ومشرف الفرع
     notifyRole({
-      branchId: part[0].branch_id,
-      roles: [],
-      type: 'general',
-      priority: 'high',
-      orderId: null,
+      branchId: part[0].branch_id, roles: [],
+      type: 'general', priority: 'high', orderId: null,
       message: `⚙️ طلب تسوية مخزون: "${part[0].name}" — النظام: ${part[0].quantity} | الفعلي: ${quantity_actual} | الفرق: ${parseInt(quantity_actual) - part[0].quantity}`
     }).catch(() => {});
 
@@ -85,68 +81,71 @@ const createAdjustment = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// POST /api/inventory/adjustments/:id/approve — اعتماد التسوية
+// POST /api/inventory/adjustments/:id/approve
 const approveAdjustment = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
-
-    const { rows: adj } = await client.query(
-      'SELECT * FROM inventory_adjustments WHERE id=$1 FOR UPDATE',
-      [req.params.id]
+    // 1. المطالبة الذرّية — يمنع الاعتماد المزدوج
+    const { rows: claimed } = await query(
+      `UPDATE inventory_adjustments
+       SET status='approved', approved_by=$1, approved_at=NOW()
+       WHERE id=$2 AND status='pending'
+       RETURNING *`,
+      [req.user.id, req.params.id]
     );
-    if (!adj.length) throw new AppError('الطلب غير موجود', 404);
-    if (adj[0].status !== 'pending') throw new AppError('الطلب لم يعد في انتظار الاعتماد');
+    if (!claimed.length) {
+      const { rows: adj } = await query(
+        'SELECT status FROM inventory_adjustments WHERE id=$1', [req.params.id]
+      );
+      if (!adj.length) throw new AppError('الطلب غير موجود', 404);
+      throw new AppError('الطلب لم يعد في انتظار الاعتماد — ربما تمت معالجته', 409);
+    }
+    const a = claimed[0];
 
-    const a = adj[0];
-
-    // تحقق أن الكمية في النظام لم تتغير منذ تقديم الطلب
-    const { rows: current } = await client.query(
-      'SELECT quantity, avg_cost, cost_price FROM parts WHERE id=$1 FOR UPDATE',
+    // 2. اقرأ الكمية الحالية قبل التعديل
+    const { rows: current } = await query(
+      'SELECT quantity, avg_cost, cost_price FROM parts WHERE id=$1',
       [a.part_id]
     );
+    if (!current.length) {
+      await query(
+        "UPDATE inventory_adjustments SET status='pending', approved_by=NULL WHERE id=$1",
+        [a.id]
+      ).catch(() => {});
+      throw new AppError('القطعة غير موجودة في المخزون');
+    }
     const currentQty = current[0].quantity;
     const unitCost   = parseFloat(current[0].avg_cost) || parseFloat(current[0].cost_price) || 0;
 
-    // تحديث الكمية
-    await client.query(
-      'UPDATE parts SET quantity=$1, updated_by=$2, updated_at=NOW() WHERE id=$3',
-      [a.quantity_actual, req.user.id, a.part_id]
+    // 3. تحديث الكمية — كتابة مباشرة بقيمة الجرد الفعلي
+    await query(
+      'UPDATE parts SET quantity=$1, updated_at=NOW() WHERE id=$2',
+      [a.quantity_actual, a.part_id]
     );
 
-    // تحديث حالة الطلب
-    await client.query(
-      'UPDATE inventory_adjustments SET status=\'approved\', approved_by=$1, approved_at=NOW() WHERE id=$2',
-      [req.user.id, req.params.id]
-    );
-
-    // تسجيل الحركة
+    // 4. سجل الحركة
     const movType = a.difference > 0 ? 'adjustment_add' : 'adjustment_sub';
-    await client.query(
+    await query(
       `INSERT INTO inventory_movements
          (part_id, branch_id, movement_type, quantity, quantity_before, quantity_after,
           unit_cost, reference_id, reference_type, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'adjustment',$9,$10)`,
       [a.part_id, a.branch_id, movType, Math.abs(a.difference),
        currentQty, a.quantity_actual, unitCost,
-       req.params.id, `تسوية جرد — ${a.reason}`, req.user.id]
+       req.params.id, `تسوية جرد — ${a.reason || ''}`, req.user.id]
     ).catch(() => {});
 
-    await client.query('COMMIT');
-
-    // إشعار من قدّم الطلب
+    // 5. إشعار صاحب الطلب
     const { notifyUser } = require('../utils/notify');
-    notifyUser({ userId: a.created_by, type:'general', priority:'normal',
-      message: `✅ تمت الموافقة على طلب تسوية المخزون — الفرق: ${a.difference > 0 ? '+' : ''}${a.difference}` }).catch(() => {});
+    notifyUser({
+      userId: a.created_by, type: 'general', priority: 'normal',
+      message: `✅ تمت الموافقة على طلب تسوية المخزون — الفرق: ${a.difference > 0 ? '+' : ''}${a.difference}`
+    }).catch(() => {});
 
     res.json({ success: true, message: 'تمت الموافقة على تسوية المخزون' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
-// POST /api/inventory/adjustments/:id/reject — رفض التسوية
+// POST /api/inventory/adjustments/:id/reject
 const rejectAdjustment = async (req, res, next) => {
   try {
     const { reason } = req.body;
@@ -156,11 +155,13 @@ const rejectAdjustment = async (req, res, next) => {
        WHERE id=$3 AND status='pending' RETURNING *`,
       [req.user.id, reason, req.params.id]
     );
-    if (!rows.length) throw new AppError('الطلب غير موجود أو تمت معالجته', 404);
+    if (!rows.length) throw new AppError('الطلب غير موجود أو تمت معالجته', 409);
 
     const { notifyUser } = require('../utils/notify');
-    notifyUser({ userId: rows[0].created_by, type:'general', priority:'normal',
-      message: `❌ تم رفض طلب تسوية المخزون — السبب: ${reason || 'لم يُذكر'}` }).catch(() => {});
+    notifyUser({
+      userId: rows[0].created_by, type: 'general', priority: 'normal',
+      message: `❌ تم رفض طلب تسوية المخزون — السبب: ${reason || 'لم يُذكر'}`
+    }).catch(() => {});
 
     res.json({ success: true, message: 'تم رفض طلب التسوية' });
   } catch (err) { next(err); }

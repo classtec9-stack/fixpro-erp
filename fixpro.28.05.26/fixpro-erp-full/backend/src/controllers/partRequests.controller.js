@@ -1,15 +1,16 @@
-const { query, getClient } = require('../config/database');
+// backend/src/controllers/partRequests.controller.js
+// بدون transactions — متوافق مع Supabase pooler
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 const { notifyRole } = require('../utils/notify');
 
-// POST /api/part-requests — الفني يطلب قطعة (بدون خصم)
+// POST /api/part-requests
 const createRequest = async (req, res, next) => {
   try {
     const { order_id, part_id, part_name, quantity = 1, notes } = req.body;
     if (!order_id) throw new AppError('رقم التذكرة مطلوب');
     if (!part_id && !part_name) throw new AppError('يجب تحديد القطعة');
 
-    // جلب اسم القطعة والسعر إذا كانت من المخزون
     let pName = part_name, price = null;
     if (part_id) {
       const { rows } = await query('SELECT name, sell_price FROM parts WHERE id=$1', [part_id]);
@@ -22,35 +23,34 @@ const createRequest = async (req, res, next) => {
       [order_id, part_id || null, pName, quantity, price, notes || null, req.user.id]
     );
 
-    // جلب رقم التذكرة
     const { rows: ord } = await query('SELECT order_number FROM orders WHERE id=$1', [order_id]);
     const orderNum = ord[0]?.order_number || order_id;
 
-    // إشعار المخزن
-    await notifyRole({
+    notifyRole({
       branchId: req.user.branch_id,
       roles: ['warehouse','admin','branch_manager'],
-      type: 'part_request',
-      orderId: order_id,
+      type: 'part_request', orderId: order_id,
       message: `طلب قطعة: ${pName} (×${quantity}) للتذكرة ${orderNum}`
-    });
+    }).catch(() => {});
 
     res.status(201).json({ success: true, message: 'تم إرسال طلب القطعة للمخزن', data: rows[0] });
   } catch (err) { next(err); }
 };
 
-// GET /api/part-requests — قائمة الطلبات
+// GET /api/part-requests
 const getRequests = async (req, res, next) => {
   try {
     const { status, order_id } = req.query;
-    const params = [];
-    const conds = [];
+    const params = [], conds = [];
     if (status)   { params.push(status);   conds.push(`pr.status = $${params.length}`); }
     if (order_id) { params.push(order_id); conds.push(`pr.order_id = $${params.length}`); }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
     const { rows } = await query(
-      `SELECT pr.*, o.order_number,
+      `SELECT pr.id, pr.order_id, pr.part_id, pr.part_name, pr.quantity,
+              pr.unit_price, pr.notes, pr.status, pr.requested_by, pr.approved_by,
+              pr.created_at, pr.approved_at,
+              o.order_number,
               req.full_name as requested_by_name,
               app.full_name as approved_by_name,
               p.quantity as stock_available
@@ -67,75 +67,112 @@ const getRequests = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// POST /api/part-requests/:id/approve — المخزن يوافق ويحوّل القطعة (الخصم الوحيد)
+// POST /api/part-requests/:id/approve — المخزن يوافق ويحوّل القطعة
 const approveRequest = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
-
-    const { rows: reqRows } = await client.query(
-      'SELECT * FROM part_requests WHERE id=$1 FOR UPDATE', [req.params.id]
+    // 1. المطالبة الذرّية بالحالة — يمنع موافقة مزدوجة
+    const { rows: claimed } = await query(
+      `UPDATE part_requests SET status='approved', approved_by=$1, approved_at=NOW()
+       WHERE id=$2 AND status='pending'
+       RETURNING *`,
+      [req.user.id, req.params.id]
     );
-    if (!reqRows.length) throw new AppError('الطلب غير موجود', 404);
-    const pr = reqRows[0];
-    if (pr.status !== 'pending') throw new AppError('تم معالجة هذا الطلب مسبقاً', 409);
-    if (!pr.part_id) throw new AppError('هذه القطعة غير مرتبطة بالمخزون — أضفها يدوياً', 400);
+    if (!claimed.length) {
+      const { rows: pr } = await query('SELECT status FROM part_requests WHERE id=$1', [req.params.id]);
+      if (!pr.length) throw new AppError('الطلب غير موجود', 404);
+      throw new AppError('تم معالجة هذا الطلب مسبقاً', 409);
+    }
+    const pr = claimed[0];
+    if (!pr.part_id) {
+      // تراجع: القطعة غير مرتبطة بالمخزون
+      await query(
+        "UPDATE part_requests SET status='pending', approved_by=NULL, approved_at=NULL WHERE id=$1",
+        [pr.id]
+      ).catch(() => {});
+      throw new AppError('هذه القطعة غير مرتبطة بالمخزون — أضفها يدوياً للتذكرة', 400);
+    }
 
-    // تحقق من المخزون — مع التحقق أن القطعة من نفس فرع التذكرة
-    const { rows: stock } = await client.query(
-      `SELECT p.quantity, p.sell_price, p.name
+    // 2. تحقق المخزون والفرع — قراءة فقط
+    const { rows: stock } = await query(
+      `SELECT p.quantity, p.sell_price, p.name, p.branch_id
        FROM parts p
-       JOIN orders o ON o.id = $2
-       WHERE p.id = $1
-         AND p.branch_id = o.branch_id
-       FOR UPDATE`,
+       JOIN orders o ON o.id = $2 AND o.branch_id = p.branch_id
+       WHERE p.id = $1`,
       [pr.part_id, pr.order_id]
     );
-    if (!stock.length) throw new AppError('القطعة غير موجودة أو لا تخص فرع هذه التذكرة', 403);
-    if (stock[0].quantity < pr.quantity)
-      throw new AppError(`الكمية المتاحة ${stock[0].quantity} فقط`);
+    if (!stock.length) {
+      await query(
+        "UPDATE part_requests SET status='pending', approved_by=NULL, approved_at=NULL WHERE id=$1",
+        [pr.id]
+      ).catch(() => {});
+      throw new AppError('القطعة غير موجودة أو لا تخص فرع هذه التذكرة', 403);
+    }
+    if (stock[0].quantity < pr.quantity) {
+      await query(
+        "UPDATE part_requests SET status='pending', approved_by=NULL, approved_at=NULL WHERE id=$1",
+        [pr.id]
+      ).catch(() => {});
+      throw new AppError(`الكمية المتاحة ${stock[0].quantity} فقط — الطلب أُعيد للانتظار`);
+    }
 
     const price = pr.unit_price || stock[0].sell_price;
 
-    // 1. أضف القطعة للتذكرة (مربوطة بالطلب)
-    await client.query(
+    // 3. أضف القطعة للتذكرة — trigger يخصم المخزون تلقائياً
+    await query(
       `INSERT INTO order_parts (order_id, part_id, quantity, unit_price, added_by, request_id)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [pr.order_id, pr.part_id, pr.quantity, price, req.user.id, pr.id]
     );
-    // trg_deduct_inventory يخصم تلقائياً عند INSERT — لا خصم يدوي هنا
 
-    // 3. سجل حركة المخزون (issue)
-    await client.query(
-      `INSERT INTO inventory_movements (part_id, movement_type, quantity, reference_id, notes, created_by)
-       VALUES ($1, 'issue', $2, $3, $4, $5)`,
+    // 4. سجل حركة الصرف
+    await query(
+      `INSERT INTO inventory_movements
+         (part_id, movement_type, quantity, reference_id, notes, created_by)
+       VALUES ($1,'issue',$2,$3,$4,$5)`,
       [pr.part_id, pr.quantity, pr.order_id,
        `صرف قطعة لتذكرة صيانة — ${stock[0].name}`, req.user.id]
     ).catch(() => {});
 
-    // 4. حدّث حالة الطلب
-    await client.query(
-      `UPDATE part_requests SET status='approved', approved_by=$1, approved_at=NOW() WHERE id=$2`,
-      [req.user.id, pr.id]
+    // 5. تحويل حالة التذكرة إلى part_transferred ذرّياً
+    await query(
+      `UPDATE orders SET status='part_transferred', updated_at=NOW()
+       WHERE id=$1 AND status='waiting_part'`,
+      [pr.order_id]
     );
 
-    await client.query('COMMIT');
-    res.json({ success: true, message: `تم تحويل ${stock[0].name} للتذكرة وخصمها من المخزون` });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+    // 6. إشعار الفني باسم موظف المخزون الذي وافق
+    const { rows: ordRow } = await query(
+      'SELECT order_number, technician_id FROM orders WHERE id=$1',
+      [pr.order_id]
+    );
+    if (ordRow[0]?.technician_id) {
+      const { notifyUser } = require('../utils/notify');
+      notifyUser({
+        userId:   ordRow[0].technician_id,
+        type:     'part_request',
+        priority: 'high',
+        orderId:  pr.order_id,
+        message:  `📦 وصلت القطعة: ${stock[0].name} للتذكرة ${ordRow[0].order_number} — بواسطة: ${req.user.full_name || 'موظف المخزون'} | أكّد الاستلام لبدء الإصلاح`
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, message: `تم تحويل ${stock[0].name} للتذكرة وخصمها من المخزون — التذكرة انتقلت لحالة "القطعة في الطريق"` });
+  } catch (err) { next(err); }
 };
 
-// POST /api/part-requests/:id/reject — رفض الطلب
+// POST /api/part-requests/:id/reject
 const rejectRequest = async (req, res, next) => {
   try {
     const { reason } = req.body;
-    await query(
-      `UPDATE part_requests SET status='rejected', approved_by=$1, approved_at=NOW(),
-        notes=COALESCE(notes,'') || ' | رفض: ' || $2 WHERE id=$3`,
+    const { rows } = await query(
+      `UPDATE part_requests
+       SET status='rejected', approved_by=$1, approved_at=NOW(),
+           notes=COALESCE(notes,'') || ' | رفض: ' || $2
+       WHERE id=$3 AND status='pending'
+       RETURNING *`,
       [req.user.id, reason || 'غير متوفر', req.params.id]
     );
+    if (!rows.length) throw new AppError('الطلب غير موجود أو تمت معالجته مسبقاً', 409);
     res.json({ success: true, message: 'تم رفض الطلب' });
   } catch (err) { next(err); }
 };

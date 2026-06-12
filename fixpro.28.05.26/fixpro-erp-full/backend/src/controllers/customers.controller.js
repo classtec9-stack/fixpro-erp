@@ -161,4 +161,23 @@ const updateCustomer = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getCustomers, getCustomerById, createCustomer, updateCustomer };
+
+// PATCH /api/customers/:id/name — تحديث الاسم فقط (للاستقبال عند التعارض)
+const updateCustomerName = async (req, res, next) => {
+  try {
+    const { full_name } = req.body;
+    if (!full_name?.trim()) throw new AppError('الاسم مطلوب');
+
+    const { rows } = await query(
+      `UPDATE customers SET full_name=$1, updated_at=NOW()
+       WHERE id=$2 RETURNING id, full_name, phone`,
+      [full_name.trim(), req.params.id]
+    );
+    if (!rows.length) throw new AppError('العميل غير موجود', 404);
+
+    res.json({ success: true, message: 'تم تحديث اسم العميل', data: rows[0] });
+  } catch (err) { next(err); }
+};
+
+module.exports = {
+  updateCustomerName, getCustomers, getCustomerById, createCustomer, updateCustomer };

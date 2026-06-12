@@ -12,5 +12,7 @@ router.post('/',   authorize('admin','branch_manager','receptionist'), c.createC
 
 // تعديل — admin و branch_manager فقط (بيانات حساسة)
 router.put('/:id', authorize('admin','branch_manager'), c.updateCustomer);
+// تحديث الاسم فقط — يُستخدم عند تعارض الاسم عند إنشاء تذكرة
+router.patch('/:id/name', authorize('admin','branch_manager','receptionist'), c.updateCustomerName);
 
 module.exports = router;

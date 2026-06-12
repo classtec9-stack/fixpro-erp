@@ -1,4 +1,7 @@
-const { query, getClient } = require('../config/database');
+// backend/src/controllers/invoices.controller.js
+// نسخة بدون transactions — متوافقة مع Supabase pooler
+// الحماية من الـ race conditions عبر شروط ذرّية داخل الـ SQL نفسه
+const { query } = require('../config/database');
 const { AppError } = require('../middleware/error.middleware');
 
 const getBranchId = (req) =>
@@ -53,7 +56,7 @@ const getInvoices = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ── GET /api/invoices/stats — إحصاءات من DB مباشرة ──────
+// ── GET /api/invoices/stats ──────────────────────────────
 const getInvoiceStats = async (req, res, next) => {
   try {
     const branchId = getBranchId(req);
@@ -77,7 +80,6 @@ const getInvoiceStats = async (req, res, next) => {
 };
 
 // ── GET /api/invoices/ticket/:orderId ────────────────────
-// ⚠️ يجب أن يأتي قبل /:id في الـ routes
 const getTicketInvoiceData = async (req, res, next) => {
   try {
     const branchId = getBranchId(req);
@@ -132,21 +134,20 @@ const getTicketInvoiceData = async (req, res, next) => {
 };
 
 // ── POST /api/invoices/ticket/:orderId/finalize ──────────
+// بدون transaction: القراءات منفصلة والكتابة عملية واحدة ذرّية
 const finalizeInvoice = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { labor_cost = 0, discount = 0, discount_reason, notes, due_date } = req.body;
     const branchId = getBranchId(req);
 
-    const { rows: orderRows } = await client.query(
+    const { rows: orderRows } = await query(
       `SELECT * FROM orders WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
       [req.params.orderId, branchId]
     );
     if (!orderRows.length) throw new AppError('التذكرة غير موجودة', 404);
     const o = orderRows[0];
 
-    const { rows: partsRows } = await client.query(
+    const { rows: partsRows } = await query(
       'SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM order_parts WHERE order_id = $1',
       [req.params.orderId]
     );
@@ -155,7 +156,7 @@ const finalizeInvoice = async (req, res, next) => {
     const vat_amount = +(subtotal * 0.15).toFixed(2);
     const total      = +(subtotal + vat_amount).toFixed(2);
 
-    const { rows: existing } = await client.query(
+    const { rows: existing } = await query(
       `SELECT id, paid_amount FROM invoices
        WHERE order_id=$1 AND status NOT IN ('cancelled','refunded') LIMIT 1`,
       [req.params.orderId]
@@ -164,7 +165,7 @@ const finalizeInvoice = async (req, res, next) => {
     let rows;
     if (existing.length) {
       const paid = parseFloat(existing[0].paid_amount || 0);
-      ({ rows } = await client.query(
+      ({ rows } = await query(
         `UPDATE invoices SET
            labor_cost=$1, parts_cost=$2, subtotal=$3, discount=$4, discount_reason=$5,
            vat_amount=$6, total=$7,
@@ -179,25 +180,28 @@ const finalizeInvoice = async (req, res, next) => {
          vat_amount, total, paid, notes, existing[0].id]
       ));
     } else {
-      ({ rows } = await client.query(
+      // INSERT محمي بـ WHERE NOT EXISTS — ذرّي ضد السباق
+      ({ rows } = await query(
         `INSERT INTO invoices
            (order_id, customer_id, branch_id, created_by,
             labor_cost, parts_cost, subtotal, discount, discount_reason,
             vat_rate, vat_amount, total, balance_due, notes, due_date)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,15,$10,$11,$12,$13,$14)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,15,$10,$11,$12,$13,$14
+         WHERE NOT EXISTS (
+           SELECT 1 FROM invoices
+           WHERE order_id = $1 AND status NOT IN ('cancelled','refunded')
+         )
          RETURNING *`,
         [req.params.orderId, o.customer_id, o.branch_id, req.user.id,
          labor_cost, parts_cost, subtotal, discount, discount_reason,
          vat_amount, total, total, notes, due_date]
       ));
+      if (!rows.length)
+        throw new AppError('أُنشئت فاتورة لهذه التذكرة للتو — أعد تحميل الصفحة', 409);
     }
 
-    await client.query('COMMIT');
     res.json({ success: true, message: 'تم حفظ الفاتورة', data: rows[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // ── GET /api/invoices/:id ────────────────────────────────
@@ -231,15 +235,13 @@ const getInvoiceById = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ── POST /api/invoices — create from order ───────────────
+// ── POST /api/invoices ───────────────────────────────────
 const createInvoice = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { order_id, labor_cost = 0, discount = 0, discount_reason, notes, due_date } = req.body;
     if (!order_id) throw new AppError('رقم الأوردر مطلوب');
 
-    const { rows: orderRows } = await client.query(
+    const { rows: orderRows } = await query(
       'SELECT customer_id, branch_id FROM orders WHERE id = $1',
       [order_id]
     );
@@ -249,15 +251,7 @@ const createInvoice = async (req, res, next) => {
     if (branchId && orderRows[0].branch_id !== branchId)
       throw new AppError('ليس لديك صلاحية لإنشاء فاتورة لهذا الأوردر', 403);
 
-    // منع إنشاء فاتورتين نشطتين لنفس التذكرة
-    const { rows: existing } = await client.query(
-      `SELECT id FROM invoices WHERE order_id=$1 AND status NOT IN ('cancelled','refunded') LIMIT 1`,
-      [order_id]
-    );
-    if (existing.length)
-      throw new AppError('يوجد فاتورة نشطة لهذه التذكرة مسبقاً — استخدم التعديل أو ألغِها أولاً', 409);
-
-    const { rows: partsRows } = await client.query(
+    const { rows: partsRows } = await query(
       'SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM order_parts WHERE order_id = $1',
       [order_id]
     );
@@ -266,24 +260,28 @@ const createInvoice = async (req, res, next) => {
     const vat_amount = +(subtotal * 0.15).toFixed(2);
     const total      = +(subtotal + vat_amount).toFixed(2);
 
-    const { rows } = await client.query(
+    // INSERT ذرّي محمي ضد التكرار — لا حاجة لفحص منفصل
+    const { rows } = await query(
       `INSERT INTO invoices
          (order_id, customer_id, branch_id, created_by,
           labor_cost, parts_cost, subtotal, discount, discount_reason,
           vat_rate, vat_amount, total, balance_due, notes, due_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,15,$10,$11,$12,$13,$14)
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,15,$10,$11,$12,$13,$14
+       WHERE NOT EXISTS (
+         SELECT 1 FROM invoices
+         WHERE order_id = $1 AND status NOT IN ('cancelled','refunded')
+       )
        RETURNING *`,
       [order_id, orderRows[0].customer_id, req.user.branch_id, req.user.id,
        labor_cost, parts_cost, subtotal, discount, discount_reason,
        vat_amount, total, total, notes, due_date]
     );
 
-    await client.query('COMMIT');
+    if (!rows.length)
+      throw new AppError('يوجد فاتورة نشطة لهذه التذكرة مسبقاً — استخدم التعديل أو ألغِها أولاً', 409);
+
     res.status(201).json({ success: true, message: 'تم إنشاء الفاتورة', data: rows[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // ── POST /api/invoices/:id/pay ───────────────────────────
@@ -293,25 +291,39 @@ const recordPayment = async (req, res, next) => {
     if (!amount || amount <= 0) throw new AppError('المبلغ غير صالح');
 
     const branchId = getBranchId(req);
-    const { rows: inv } = await query(
-      `SELECT * FROM invoices WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
-      [req.params.id, branchId]
-    );
 
-    if (!inv.length)                       throw new AppError('الفاتورة غير موجودة', 404);
-    if (inv[0].status === 'paid')          throw new AppError('الفاتورة مدفوعة بالكامل مسبقاً');
-    if (inv[0].status === 'cancelled')     throw new AppError('لا يمكن تسجيل دفعة على فاتورة ملغاة');
-    if (inv[0].status === 'refunded')      throw new AppError('لا يمكن تسجيل دفعة على فاتورة مستردة');
-    if (amount > inv[0].balance_due)
-      throw new AppError(`المبلغ (${amount}) أكبر من الرصيد المتبقي (${inv[0].balance_due})`);
-
+    // INSERT ذرّي: الدفعة تُسجَّل فقط إذا الفاتورة صالحة والرصيد كافٍ
+    // الشرط داخل نفس الجملة = لا سباق بين الفحص والكتابة
     const { rows } = await query(
       `INSERT INTO payments (invoice_id, received_by, amount, method, reference_no, notes)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [req.params.id, req.user.id, amount, method, reference_no || null, notes || null]
+       SELECT $1, $2, $3, $4, $5, $6
+       WHERE EXISTS (
+         SELECT 1 FROM invoices
+         WHERE id = $1
+           AND ($7::uuid IS NULL OR branch_id = $7)
+           AND status IN ('pending','partial')
+           AND balance_due >= $3
+       )
+       RETURNING *`,
+      [req.params.id, req.user.id, amount, method,
+       reference_no || null, notes || null, branchId]
     );
 
-    // Trigger يحدّث balance & status تلقائياً
+    if (!rows.length) {
+      // شخّص السبب لرسالة دقيقة
+      const { rows: inv } = await query(
+        `SELECT status, balance_due FROM invoices
+         WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
+        [req.params.id, branchId]
+      );
+      if (!inv.length)                   throw new AppError('الفاتورة غير موجودة', 404);
+      if (inv[0].status === 'paid')      throw new AppError('الفاتورة مدفوعة بالكامل مسبقاً');
+      if (inv[0].status === 'cancelled') throw new AppError('لا يمكن تسجيل دفعة على فاتورة ملغاة');
+      if (inv[0].status === 'refunded')  throw new AppError('لا يمكن تسجيل دفعة على فاتورة مستردة');
+      throw new AppError(`المبلغ (${amount}) أكبر من الرصيد المتبقي (${inv[0].balance_due})`);
+    }
+
+    // Trigger حدّث balance & status — اقرأ النتيجة
     const { rows: updated } = await query(
       `SELECT i.*, COALESCE(
          (SELECT json_agg(p ORDER BY p.created_at) FROM payments p WHERE p.invoice_id=i.id),
@@ -319,7 +331,8 @@ const recordPayment = async (req, res, next) => {
        ) as payments_list FROM invoices i WHERE i.id = $1`,
       [req.params.id]
     );
-    // منح نقاط الولاء تلقائياً عند اكتمال الدفع
+
+    // نقاط الولاء التلقائية عند اكتمال الدفع
     if (updated[0]?.status === 'paid') {
       const points = Math.floor(updated[0].total / 10);
       if (points > 0) {
@@ -336,9 +349,18 @@ const recordPayment = async (req, res, next) => {
                  req.params.id, points, newBalance, `نقاط من فاتورة ${updated[0].invoice_number}`]
               )
             ]);
-          }).catch(() => {}); // لا تفشل الدفعة بسبب الـ loyalty
+          }).catch(() => {});
       }
     }
+
+    // audit_log — تسجيل العملية المالية
+    query(
+      `INSERT INTO audit_log
+         (user_id, branch_id, action, table_name, record_id, new_values)
+       VALUES ($1,$2,'payment','payments',$3,$4)`,
+      [req.user.id, req.user.branch_id, rows[0].id,
+       JSON.stringify({ invoice_id: req.params.id, amount, method })]
+    ).catch(() => {});
 
     res.json({ success: true, message: 'تم تسجيل الدفعة', payment: rows[0], invoice: updated[0] });
   } catch (err) { next(err); }
@@ -346,74 +368,104 @@ const recordPayment = async (req, res, next) => {
 
 // ── POST /api/invoices/:id/cancel ───────────────────────
 const cancelInvoice = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { reason } = req.body;
     if (!reason?.trim()) throw new AppError('سبب الإلغاء مطلوب');
 
     const branchId = getBranchId(req);
-    const { rows: inv } = await client.query(
-      `SELECT * FROM invoices WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
-      [req.params.id, branchId]
-    );
-    if (!inv.length)                       throw new AppError('الفاتورة غير موجودة', 404);
-    if (inv[0].status === 'paid')          throw new AppError('لا يمكن إلغاء فاتورة مدفوعة — استخدم الاسترداد');
-    if (inv[0].status === 'cancelled')     throw new AppError('الفاتورة ملغاة مسبقاً');
-    if (inv[0].status === 'refunded')      throw new AppError('الفاتورة مستردة مسبقاً');
 
-    const { rows } = await client.query(
+    // UPDATE ذرّي: الشروط داخل WHERE — لا سباق
+    const { rows } = await query(
       `UPDATE invoices SET status='cancelled', notes=COALESCE($1, notes), updated_at=NOW()
-       WHERE id=$2 RETURNING *`,
-      [reason, req.params.id]
+       WHERE id=$2
+         AND ($3::uuid IS NULL OR branch_id = $3)
+         AND status IN ('pending','partial')
+       RETURNING *`,
+      [reason, req.params.id, branchId]
     );
-    await client.query('COMMIT');
+
+    if (!rows.length) {
+      const { rows: inv } = await query(
+        `SELECT status FROM invoices
+         WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
+        [req.params.id, branchId]
+      );
+      if (!inv.length)                   throw new AppError('الفاتورة غير موجودة', 404);
+      if (inv[0].status === 'paid')      throw new AppError('لا يمكن إلغاء فاتورة مدفوعة — استخدم الاسترداد');
+      if (inv[0].status === 'cancelled') throw new AppError('الفاتورة ملغاة مسبقاً');
+      if (inv[0].status === 'refunded')  throw new AppError('الفاتورة مستردة مسبقاً');
+      throw new AppError('تعذر إلغاء الفاتورة');
+    }
+
+    // audit_log
+    query(
+      `INSERT INTO audit_log
+         (user_id, branch_id, action, table_name, record_id, new_values)
+       VALUES ($1,$2,'cancel','invoices',$3,$4)`,
+      [req.user.id, req.user.branch_id, req.params.id,
+       JSON.stringify({ reason })]
+    ).catch(() => {});
+
     res.json({ success: true, message: 'تم إلغاء الفاتورة', data: rows[0] });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 // ── POST /api/invoices/:id/refund ────────────────────────
 const refundInvoice = async (req, res, next) => {
-  const client = await getClient();
   try {
-    await client.query('BEGIN');
     const { amount, reason } = req.body;
     if (!amount || amount <= 0)  throw new AppError('مبلغ الاسترداد غير صالح');
     if (!reason?.trim())         throw new AppError('سبب الاسترداد مطلوب');
 
     const branchId = getBranchId(req);
-    const { rows: inv } = await client.query(
-      `SELECT * FROM invoices WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2) FOR UPDATE`,
-      [req.params.id, branchId]
-    );
-    if (!inv.length)                   throw new AppError('الفاتورة غير موجودة', 404);
-    if (!['paid','partial'].includes(inv[0].status))
-      throw new AppError('يمكن الاسترداد فقط للفواتير المدفوعة أو المدفوعة جزئياً');
-    if (parseFloat(amount) > parseFloat(inv[0].paid_amount))
-      throw new AppError(`لا يمكن استرداد أكثر من المدفوع (${inv[0].paid_amount} ر.س)`);
 
-    const { rows: payRow } = await client.query(
+    // INSERT ذرّي: الاسترداد يُسجَّل فقط إذا المدفوع يكفي — لا سباق
+    const { rows: payRow } = await query(
       `INSERT INTO payments (invoice_id, received_by, amount, method, notes)
-       VALUES ($1,$2,$3,'refund',$4) RETURNING *`,
-      [req.params.id, req.user.id, -Math.abs(amount), reason]
+       SELECT $1, $2, $3, 'refund', $4
+       WHERE EXISTS (
+         SELECT 1 FROM invoices
+         WHERE id = $1
+           AND ($5::uuid IS NULL OR branch_id = $5)
+           AND status IN ('paid','partial')
+           AND paid_amount >= $6
+       )
+       RETURNING *`,
+      [req.params.id, req.user.id, -Math.abs(amount), reason,
+       branchId, Math.abs(amount)]
     );
 
-    // Trigger يحدّث status تلقائياً (paid → partial/refunded)
-    const { rows } = await client.query('SELECT * FROM invoices WHERE id=$1', [req.params.id]);
-    await client.query('COMMIT');
+    if (!payRow.length) {
+      const { rows: inv } = await query(
+        `SELECT status, paid_amount FROM invoices
+         WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`,
+        [req.params.id, branchId]
+      );
+      if (!inv.length) throw new AppError('الفاتورة غير موجودة', 404);
+      if (!['paid','partial'].includes(inv[0].status))
+        throw new AppError('يمكن الاسترداد فقط للفواتير المدفوعة أو المدفوعة جزئياً');
+      throw new AppError(`لا يمكن استرداد أكثر من المدفوع (${inv[0].paid_amount} ر.س)`);
+    }
+
+    // Trigger حدّث status تلقائياً
+    const { rows } = await query('SELECT * FROM invoices WHERE id=$1', [req.params.id]);
+
+    // audit_log — الاسترداد عملية حساسة
+    query(
+      `INSERT INTO audit_log
+         (user_id, branch_id, action, table_name, record_id, new_values)
+       VALUES ($1,$2,'refund','payments',$3,$4)`,
+      [req.user.id, req.user.branch_id, payRow[0].id,
+       JSON.stringify({ invoice_id: req.params.id, amount: -Math.abs(amount), reason })]
+    ).catch(() => {});
+
     res.json({
       success: true,
       message: `تم استرداد ${amount} ر.س`,
       refund: payRow[0],
       invoice: rows[0]
     });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    next(err);
-  } finally { client.release(); }
+  } catch (err) { next(err); }
 };
 
 module.exports = {

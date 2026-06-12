@@ -22,7 +22,8 @@ const STATUS_CONFIG = {
   diagnosing:       { label:'قيد الفحص',            badge:'badge-diag',   next:'in_repair',     nextLabel:'بدء الإصلاح' },
   waiting_approval: { label:'انتظار موافقة العميل', badge:'badge-wait',   next:'in_repair',     nextLabel:'موافقة العميل' },
   in_repair:        { label:'داخل الورشة',          badge:'badge-repair', next:'ready',         nextLabel:'جاهز للتسليم' },
-  waiting_part:     { label:'ينتظر قطعة غيار',     badge:'badge-wait',   next:'in_repair',     nextLabel:'وصلت القطعة' },
+  waiting_part:     { label:'ينتظر قطعة غيار',     badge:'badge-wait',   next:null,            nextLabel:null },         // ← لا تغيير يدوي — ينتظر موافقة المخزون
+  part_transferred: { label:'القطعة في الطريق',    badge:'badge-repair', next:'in_repair',     nextLabel:'✅ تأكيد استلام القطعة' }, // ← الفني يؤكد بعد موافقة المخزون
   ready:            { label:'جاهز للتسليم',         badge:'badge-ready',  next:'delivered',     nextLabel:'تم التسليم' },
   delivered:        { label:'تم التسليم',           badge:'badge-done',   next:null,            nextLabel:null },
   rejected:         { label:'مرفوض',                badge:'badge-cancel', next:null,            nextLabel:null },
@@ -230,7 +231,7 @@ function StatusBoard({ data, loading, onUpdateStatus }) {
   if (loading) return <Loading />
   if (!data) return null
 
-  const BOARD_STATUSES = ['new','quick_check','diagnosing','in_repair','waiting_part','waiting_approval','ready']
+  const BOARD_STATUSES = ['new','quick_check','diagnosing','in_repair','waiting_part','part_transferred','waiting_approval','ready']
 
   return (
     <div style={{ display:'grid', gridTemplateColumns:`repeat(${BOARD_STATUSES.length}, minmax(160px,1fr))`, gap:10, overflowX:'auto' }}>
@@ -1117,7 +1118,7 @@ function NewTicketModal({ onClose, onSuccess }) {
                 onClick={async () => {
                   // حدّث الاسم ثم انتقل للخطوة الثانية
                   try {
-                    await api.put(`/customers/${nameConflict.existing_id}`, { full_name: nameConflict.new_name })
+                    await api.patch(`/customers/${nameConflict.existing_id}/name`, { full_name: nameConflict.new_name })
                     setCustomerFound(prev => prev ? { ...prev, full_name: nameConflict.new_name } : prev)
                     setNameConflict(null)
                     setStep(2)
